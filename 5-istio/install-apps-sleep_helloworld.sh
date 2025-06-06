@@ -1,6 +1,6 @@
 #!/bin/bash
 
-. env-istio.sh
+. ../env-istio.sh
 
 #load helloworld and sleep images
 
