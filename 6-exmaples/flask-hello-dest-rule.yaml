@@ -1,0 +1,10 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: flask-hello-dr
+spec:
+  host: flask-hello
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+

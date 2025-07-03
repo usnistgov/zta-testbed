@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-hello-service
+  namespace: sample
+spec:
+  selector:
+    app: flask-hello
+  type: LoadBalancer
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-hello-deployment
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flask-hello
+  template:
+    metadata:
+      labels:
+        app: flask-hello
+    spec:
+      containers:
+      - name: flask-hello
+        image: 10.5.0.2:8443/flask-hello:latest   
+        ports:
+        - containerPort: 80
+      imagePullSecrets:
+      - name: registry-ca
+

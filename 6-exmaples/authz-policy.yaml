@@ -1,0 +1,13 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-curl-client
+spec:
+  selector:
+    matchLabels:
+      app: flask-hello
+  rules:
+  - from:
+    - source:
+        principals: ["spiffe://cluster.local/ns/default/sa/default"]
+
