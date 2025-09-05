@@ -10,17 +10,24 @@ KUBERNETES_VERSION="1.31"
 CALICO_VERSION="3.28.2"
 POD_NETWORK_CIDR="192.168.0.0/16"
 ROOT_PASSWORD="kubeadmin"
-ADV_IP=$(ifconfig | grep 10.5.0. | awk '{print $2}')
-CLUSTER_NAME=cluster1
 
+ADV_IP=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}')
+LAST_OCTET=$(echo "$ADV_IP" | awk -F. '{print $4}')
 
-if [[ "${ADV_IP}" == *.*1 ]]; then
-  CLUSTER_NAME=cluster1
-elif [[ "${ADV_IP}" == *.*2 ]]; then 
-  CLUSTER_NAME=cluster2
-elif [[ "${ADV_IP}" == *.*3 ]]; then 
-  CLUSTER_NAME=cluster3
+# default value = even / odd number
+if (( LAST_OCTET % 2 == 0 )); then
+  DEFAULT_CLUSTER="cluster1"
+else
+  DEFAULT_CLUSTER="cluster2"
 fi
+
+# if there is input string for cluster name, then use it 
+CLUSTER_NAME="${1:-$DEFAULT_CLUSTER}"
+
+echo "Detected IP: $ADV_IP"
+echo "Last octet: $LAST_OCTET"
+echo "Cluster name: $CLUSTER_NAME"
+
 
 cat <<EOF >/root/config.yaml
 apiVersion: kubeadm.k8s.io/v1beta3
