@@ -1,7 +1,8 @@
 #!/bin/sh
 set -x
 
-. env-istio.sh 
+PWD=$(pwd)
+. $PWD/env-istio.sh
 
 docker pull quay.io/cilium/cilium:v1.14.1
 

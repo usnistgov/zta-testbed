@@ -1,7 +1,8 @@
 #!/bin/sh
 set -x
 
-. /vagrant/env-istio.sh 
+PWD=$(pwd)
+. $PWD/env-istio.sh
 
 # download docker images to a host
 echo "Pulling metallb images to a docker host..."

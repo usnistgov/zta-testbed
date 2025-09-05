@@ -2,9 +2,9 @@
 set -x
 
 PWD=$(pwd)
-install_kubectl.sh
-install_istioctl.sh 
-install_cilium.sh 
-install_k9s_webi.sh 
+$PWD/install_kubectl.sh
+$PWD/install_istioctl.sh
+$PWD/install_cilium.sh
+$PWD/install_k9s_webi.sh
 
 

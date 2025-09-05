@@ -132,6 +132,7 @@ master_tasks() {
 
 
     #kubeadm init --config /root/init-config.yaml
+    #kubeadm init --pod-network-cidr="${POD_NETWORK_CIDR}" --apiserver-advertise-address=${ADV_IP} --ignore-preflight-errors=all >> /root/kubeinit.log 2>&1     # <-- in case of LXC
     kubeadm init --pod-network-cidr="${POD_NETWORK_CIDR}" --apiserver-advertise-address=${ADV_IP} >> /root/kubeinit.log 2>&1
 
     log "TASK 9: Copying kube admin config"
