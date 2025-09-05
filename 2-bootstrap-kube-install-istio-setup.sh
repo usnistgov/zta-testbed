@@ -103,6 +103,7 @@ main_tasks() {
     #echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
 
     #install_packages containerd.io
+    command -v containerd >/dev/null 2>&1 || (apt update && apt install -y containerd)
     mkdir -p /etc/containerd/
     containerd config default > /etc/containerd/config.toml
     sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
@@ -171,13 +172,12 @@ main() {
     main_tasks
 
     #if [[ $(hostname) =~ .*master.* ]]; then
-    if [[ $(hostname) =~ .*comp.* ]]; then
-        master_tasks
-    elif [[ $(hostname) =~ .*worker.* ]]; then
+    #if [[ $(hostname) =~ .*comp.* ]]; then
+    #    master_tasks
+    if [[ $(hostname) =~ .*worker.* ]]; then
         worker_tasks
     else
-        log "Unknown node type. Exiting."
-        exit 1
+        master_tasks
     fi
 
     log "Rename Context"
