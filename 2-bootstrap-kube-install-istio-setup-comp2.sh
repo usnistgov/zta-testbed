@@ -173,6 +173,9 @@ main() {
         exit 1
     fi
 
+    log "Rename Context"
+    kubectl config rename-context kubernetes-admin@kubernetes ${CLUSTER_NAME}
+
     log "Bootstrap completed successfully"
 }
 
