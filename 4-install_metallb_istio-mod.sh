@@ -25,6 +25,18 @@ echo "Wait 30 sec for metallb to get ready..."
 
 sleep 30
 
+
+# default Route IP address 
+ADV_IP=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}')
+
+# extract first three octet (xxx.xxx.xxx)
+PREFIX3=$(echo "$ADV_IP" | awk -F. '{print $1"."$2"."$3}')
+
+# check 
+echo "Detected IP: $ADV_IP"
+echo "Using prefix: $PREFIX3"
+
+
 #create metallb pool and L2 advertisment
 echo "creating metallb l2 pool on $CLUSTER1_NAME..."
 kubectl apply --context="${CLUSTER1_CTX}" -f - <<EOF
@@ -36,7 +48,7 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-  - 10.5.0.100-10.5.0.120 
+  - ${PREFIX3}.100-${PREFIX3}.119 
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
@@ -57,7 +69,7 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-  - 10.5.0.121-10.5.0.139 
+  - ${PREFIX3}.120-${PREFIX3}.139 
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
