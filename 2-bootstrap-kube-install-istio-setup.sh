@@ -95,6 +95,10 @@ main_tasks() {
     log "TASK 1: Installing essential packages"
     install_packages net-tools curl ssh software-properties-common gpg
 
+	# packet forwarding enabled in kernel
+	echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+	sudo sysctl -w net.ipv4.ip_forward=1
+
     log "TASK 2: Installing containerd runtime"
     install_packages apt-transport-https ca-certificates curl gnupg lsb-release
 
