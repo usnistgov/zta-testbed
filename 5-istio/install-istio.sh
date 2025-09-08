@@ -1,4 +1,5 @@
 #!/bin/bash
+set -x
 
 LOC="$PWD"
 . ../env-istio.sh
@@ -13,18 +14,18 @@ LOC="$PWD"
 # install certs in both clusters
 kubectl create namespace istio-system --context=${CLUSTER1_CTX}
 kubectl create secret generic cacerts -n istio-system \
-      --from-file=${LOC}certs/cluster1/ca-cert.pem \
-      --from-file=${LOC}certs/cluster1/ca-key.pem \
-      --from-file=${LOC}certs/cluster1/root-cert.pem \
-      --from-file=${LOC}certs/cluster1/cert-chain.pem \
+      --from-file=${LOC}/certs/cluster1/ca-cert.pem \
+      --from-file=${LOC}/certs/cluster1/ca-key.pem \
+      --from-file=${LOC}/certs/cluster1/root-cert.pem \
+      --from-file=${LOC}/certs/cluster1/cert-chain.pem \
       --context=${CLUSTER1_CTX}
 
 kubectl create namespace istio-system --context=${CLUSTER2_CTX}
 kubectl create secret generic cacerts -n istio-system \
-      --from-file=${LOC}certs/cluster2/ca-cert.pem \
-      --from-file=${LOC}certs/cluster2/ca-key.pem \
-      --from-file=${LOC}certs/cluster2/root-cert.pem \
-      --from-file=${LOC}certs/cluster2/cert-chain.pem \
+      --from-file=${LOC}/certs/cluster2/ca-cert.pem \
+      --from-file=${LOC}/certs/cluster2/ca-key.pem \
+      --from-file=${LOC}/certs/cluster2/root-cert.pem \
+      --from-file=${LOC}/certs/cluster2/cert-chain.pem \
       --context=${CLUSTER2_CTX}
 
 
@@ -40,11 +41,11 @@ kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.
 
 # Configure cluster1 as a primary
 echo "Installing istio in $CLUSTER1_NAME..."
-istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}cluster1.yaml --skip-confirmation
+istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}/cluster1.yaml --skip-confirmation
 
 # Configure cluster2 as a primary
 echo "Installing istio in $CLUSTER2_NAME..."
-istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}cluster2.yaml --skip-confirmation
+istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2.yaml --skip-confirmation
 
 
 
