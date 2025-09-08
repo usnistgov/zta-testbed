@@ -11,8 +11,30 @@ CALICO_VERSION="3.28.2"
 POD_NETWORK_CIDR="192.168.0.0/16"
 ROOT_PASSWORD="kubeadmin"
 
-ADV_IP=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}')
+
+# 1) Selectible parameters
+#   $1 = CLUSTER_NAME (optional)
+#   $2 = INPUT_IP_ADDRESS (optional, e.g., 192.168.10.23)
+ARG_CLUSTER_NAME="${1:-}"     # 빈 값이면 나중에 홀짝 규칙으로 결정
+INPUT_IP_ADDRESS="${2:-}"     # 빈 값이면 ip route 로 탐지
+
+
+# 2) ADV_IP decision -  if 2nd parameter exist, prioritized
+if [[ -n "$INPUT_IP_ADDRESS" ]]; then
+  # ip address format verification
+  if [[ ! "$INPUT_IP_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    echo "ERROR: INPUT_IP_ADDRESS format is NOT IPv4 : $INPUT_IP_ADDRESS" >&2
+    exit 1
+  fi
+  ADV_IP="$INPUT_IP_ADDRESS"
+else
+  ADV_IP=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}')
+fi
+
+
+# 3) last octet decision from ip address for cluster name (even=cluster1, odd=cluster2)
 LAST_OCTET=$(echo "$ADV_IP" | awk -F. '{print $4}')
+PREFIX3=$(awk -F. '{print $1"."$2"."$3}' <<< "$ADV_IP") # optional
 
 # default value = even / odd number
 if (( LAST_OCTET % 2 == 0 )); then
@@ -22,7 +44,8 @@ else
 fi
 
 # if there is input string for cluster name, then use it 
-CLUSTER_NAME="${1:-$DEFAULT_CLUSTER}"
+# same as CLUSTER_NAME="${1:-$DEFAULT_CLUSTER}"
+CLUSTER_NAME="${ARG_CLUSTER_NAME:-$DEFAULT_CLUSTER}"
 
 echo "Detected IP: $ADV_IP"
 echo "Last octet: $LAST_OCTET"
