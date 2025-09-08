@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -x
 
 PWD=$(pwd)
@@ -8,6 +8,26 @@ PWD=$(pwd)
 echo "Pulling metallb images to a docker host..."
 #docker pull quay.io/metallb/controller:v0.13.10
 #docker pull quay.io/metallb/speaker:v0.13.10
+
+INPUT_IP_ADDRESS="${1:-}"     # 빈 값이면 ip route 로 탐지
+
+if [[ -n "$INPUT_IP_ADDRESS" ]]; then
+  # ip address format verification
+  if [[ ! "$INPUT_IP_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    echo "ERROR: INPUT_IP_ADDRESS format is NOT IPv4 : $INPUT_IP_ADDRESS" >&2
+    exit 1
+  fi
+  ADV_IP="$INPUT_IP_ADDRESS"
+else
+  ADV_IP=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}')
+fi
+
+# extract first three octet (xxx.xxx.xxx)
+PREFIX3=$(echo "$ADV_IP" | awk -F. '{print $1"."$2"."$3}')
+
+# check 
+echo "Detected IP: $ADV_IP"
+echo "Using prefix: $PREFIX3"
 
 
 
@@ -19,22 +39,9 @@ echo "install metallb on $CLUSTER2_NAME..."
 kubectl apply --context="${CLUSTER2_CTX}" -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
 
 
-
 # wait for metallb to get ready
 echo "Wait 30 sec for metallb to get ready..."
-
 sleep 30
-
-
-# default Route IP address 
-ADV_IP=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}')
-
-# extract first three octet (xxx.xxx.xxx)
-PREFIX3=$(echo "$ADV_IP" | awk -F. '{print $1"."$2"."$3}')
-
-# check 
-echo "Detected IP: $ADV_IP"
-echo "Using prefix: $PREFIX3"
 
 
 #create metallb pool and L2 advertisment

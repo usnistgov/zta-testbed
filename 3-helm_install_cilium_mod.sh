@@ -4,7 +4,7 @@ set -x
 PWD=$(pwd)
 . $PWD/env-istio.sh
 
-docker pull quay.io/cilium/cilium:v1.14.1
+#docker pull quay.io/cilium/cilium:v1.14.1
 
 echo "Adding cilium helm repo..."
 helm repo add cilium https://helm.cilium.io/
