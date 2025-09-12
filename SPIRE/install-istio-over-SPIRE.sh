@@ -10,32 +10,32 @@ LOC="$PWD"
 #docker pull $HUB/proxyv2:$TAG
 
 # if you ever need cluster2 again, flip ONLY_CLUSTER1=false
-ONLY_CLUSTER1=true
+#ONLY_CLUSTER1=true
+ONLY_CLUSTER1=false
 
 # install certs in both clusters
 kubectl create namespace istio-system --context=${CTX_CLUSTER1}
-
-#kubectl create secret generic cacerts -n istio-system \
-#      --from-file=${LOC}/certs/cluster1/ca-cert.pem \
-#      --from-file=${LOC}/certs/cluster1/ca-key.pem \
-#      --from-file=${LOC}/certs/cluster1/root-cert.pem \
-#      --from-file=${LOC}/certs/cluster1/cert-chain.pem \
-#      --context=${CTX_CLUSTER1}
+kubectl create secret generic cacerts -n istio-system \
+      --from-file=${LOC}/certs/cluster1/ca-cert.pem \
+      --from-file=${LOC}/certs/cluster1/ca-key.pem \
+      --from-file=${LOC}/certs/cluster1/root-cert.pem \
+      --from-file=${LOC}/certs/cluster1/cert-chain.pem \
+      --context=${CTX_CLUSTER1}
 
 if ! $ONLY_CLUSTER1; then
-  kubectl create namespace istio-system --context=${CTX_CLUSTER2}
-#kubectl create secret generic cacerts -n istio-system \
-#      --from-file=${LOC}/certs/cluster2/ca-cert.pem \
-#      --from-file=${LOC}/certs/cluster2/ca-key.pem \
-#      --from-file=${LOC}/certs/cluster2/root-cert.pem \
-#      --from-file=${LOC}/certs/cluster2/cert-chain.pem \
-#      --context=${CTX_CLUSTER2}
+kubectl create namespace istio-system --context=${CTX_CLUSTER2}
+kubectl create secret generic cacerts -n istio-system \
+      --from-file=${LOC}/certs/cluster2/ca-cert.pem \
+      --from-file=${LOC}/certs/cluster2/ca-key.pem \
+      --from-file=${LOC}/certs/cluster2/root-cert.pem \
+      --from-file=${LOC}/certs/cluster2/cert-chain.pem \
+      --context=${CTX_CLUSTER2}
 fi
 
 # spire 네임스페이스는 사이드카 주입 제외(중복 방지)
 kubectl label ns spire istio-injection- --context=${CTX_CLUSTER1} --overwrite || true
 if ! $ONLY_CLUSTER1; then
-  kubectl label ns spire istio-injection- --context=${CTX_CLUSTER2} --overwrite || true
+kubectl label ns spire istio-injection- --context=${CTX_CLUSTER2} --overwrite || true
 fi
 
 
@@ -44,8 +44,8 @@ kubectl --context="${CTX_CLUSTER1}" get namespace istio-system && \
 kubectl --context="${CTX_CLUSTER1}" label namespace istio-system topology.istio.io/network=network1
 
 if ! $ONLY_CLUSTER1; then
-  kubectl --context="${CTX_CLUSTER2}" get namespace istio-system && \
-  kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.io/network=network2
+kubectl --context="${CTX_CLUSTER2}" get namespace istio-system && \
+kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.io/network=network2
 fi
 
 
@@ -58,8 +58,8 @@ istioctl --context="${CTX_CLUSTER1}" install -f ${LOC}/cluster1-SPIRE-trustDomai
 
 # Configure cluster2 as a primary
 if ! $ONLY_CLUSTER1; then
-  echo "Installing istio in $CLUSTER2_NAME..."
-  istioctl --context="${CTX_CLUSTER2}" install -f ${LOC}/cluster2-SPIRE-trustDomain.yaml --skip-confirmation
+echo "Installing istio in $CLUSTER2_NAME..."
+istioctl --context="${CTX_CLUSTER2}" install -f ${LOC}/cluster2-SPIRE-trustDomain.yaml --skip-confirmation
 fi
 
 
@@ -209,18 +209,18 @@ fi
 #SERVER_CLU2=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' clu2-control-plane)
 
 if ! $ONLY_CLUSTER1; then
-  # Enable Endpoint Discovery
-  echo "Enable Endpoint Discovery..."
-  # Install a remote secret in cluster2 that provides access to cluster1’s API server.
-  istioctl create-remote-secret \
-      --context="${CTX_CLUSTER1}" \
-      --name=cluster1 | \
-      kubectl apply -f - --context="${CTX_CLUSTER2}"
+# Enable Endpoint Discovery
+echo "Enable Endpoint Discovery..."
+# Install a remote secret in cluster2 that provides access to cluster1’s API server.
+istioctl create-remote-secret \
+    --context="${CTX_CLUSTER1}" \
+    --name=cluster1 | \
+    kubectl apply -f - --context="${CTX_CLUSTER2}"
 
-  # Install a remote secret in cluster1 that provides access to cluster2’s API server.
-  istioctl create-remote-secret \
-      --context="${CTX_CLUSTER2}" \
-      --name=cluster2 | \
-      kubectl apply -f - --context="${CTX_CLUSTER1}"
+# Install a remote secret in cluster1 that provides access to cluster2’s API server.
+istioctl create-remote-secret \
+    --context="${CTX_CLUSTER2}" \
+    --name=cluster2 | \
+    kubectl apply -f - --context="${CTX_CLUSTER1}"
 fi
 
