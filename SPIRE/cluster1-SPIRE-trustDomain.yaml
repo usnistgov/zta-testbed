@@ -8,7 +8,6 @@ spec:
       - cluster.local
   values:
     global:
-      trustDomain: example.org
       meshID: mesh1
       multiCluster:
         clusterName: cluster1
