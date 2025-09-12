@@ -6,6 +6,10 @@ spec:
     trustDomain: example.org
     trustDomainAliases:
       - cluster.local
+    defaultConfig:
+      proxyMetadata:
+        DNS_CAPTURE: "true"
+        DNS_AUTO_ALLOCATE: "true"
   values:
     global:
       meshID: mesh1
