@@ -9,11 +9,11 @@ LOC="$PWD"
 #docker pull $HUB/pilot:$TAG
 #docker pull $HUB/proxyv2:$TAG
 
-
+# if you ever need cluster2 again, flip ONLY_CLUSTER1=false
+ONLY_CLUSTER1=true
 
 # install certs in both clusters
 kubectl create namespace istio-system --context=${CLUSTER1_CTX}
-kubectl create namespace istio-system --context=${CLUSTER2_CTX}
 
 #kubectl create secret generic cacerts -n istio-system \
 #      --from-file=${LOC}/certs/cluster1/ca-cert.pem \
@@ -22,23 +22,31 @@ kubectl create namespace istio-system --context=${CLUSTER2_CTX}
 #      --from-file=${LOC}/certs/cluster1/cert-chain.pem \
 #      --context=${CLUSTER1_CTX}
 
+if ! $ONLY_CLUSTER1; then
+  kubectl create namespace istio-system --context=${CLUSTER2_CTX}
 #kubectl create secret generic cacerts -n istio-system \
 #      --from-file=${LOC}/certs/cluster2/ca-cert.pem \
 #      --from-file=${LOC}/certs/cluster2/ca-key.pem \
 #      --from-file=${LOC}/certs/cluster2/root-cert.pem \
 #      --from-file=${LOC}/certs/cluster2/cert-chain.pem \
 #      --context=${CLUSTER2_CTX}
+fi
 
 # spire 네임스페이스는 사이드카 주입 제외(중복 방지)
 kubectl label ns spire istio-injection- --context=${CLUSTER1_CTX} --overwrite || true
-kubectl label ns spire istio-injection- --context=${CLUSTER2_CTX} --overwrite || true
+if ! $ONLY_CLUSTER1; then
+  kubectl label ns spire istio-injection- --context=${CLUSTER2_CTX} --overwrite || true
+fi
 
 
 # Set the default network for cluster1,2
 kubectl --context="${CLUSTER1_CTX}" get namespace istio-system && \                                
 kubectl --context="${CLUSTER1_CTX}" label namespace istio-system topology.istio.io/network=network1
-kubectl --context="${CLUSTER2_CTX}" get namespace istio-system && \
-kubectl --context="${CLUSTER2_CTX}" label namespace istio-system topology.istio.io/network=network2
+
+if ! $ONLY_CLUSTER1; then
+  kubectl --context="${CLUSTER2_CTX}" get namespace istio-system && \
+  kubectl --context="${CLUSTER2_CTX}" label namespace istio-system topology.istio.io/network=network2
+fi
 
 
 
@@ -49,8 +57,10 @@ echo "Installing istio in $CLUSTER1_NAME..."
 istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}/cluster1-SPIRE-trustDomain.yaml --skip-confirmation
 
 # Configure cluster2 as a primary
-echo "Installing istio in $CLUSTER2_NAME..."
-istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2-SPIRE-trustDomain.yaml --skip-confirmation
+if ! $ONLY_CLUSTER1; then
+  echo "Installing istio in $CLUSTER2_NAME..."
+  istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2-SPIRE-trustDomain.yaml --skip-confirmation
+fi
 
 
 
@@ -123,7 +133,7 @@ EOF
 
 
 
-
+if ! $ONLY_CLUSTER1; then
 # Install the east-west gateway in cluster2
 #  (cf.)  samples/multicluster/gen-eastwest-gateway.sh --network network2 
 #
@@ -190,7 +200,7 @@ spec:
         - "*.local"
 EOF
 
-
+fi
 
 
 
@@ -198,19 +208,19 @@ EOF
 ## fetch cluster2 controlplan address
 #SERVER_CLU2=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' clu2-control-plane)
 
-# Enable Endpoint Discovery
-echo "Enable Endpoint Discovery..."
-# Install a remote secret in cluster2 that provides access to cluster1’s API server.
-istioctl create-remote-secret \
-    --context="${CLUSTER1_CTX}" \
-    --name=cluster1 | \
-    kubectl apply -f - --context="${CLUSTER2_CTX}"
+if ! $ONLY_CLUSTER1; then
+  # Enable Endpoint Discovery
+  echo "Enable Endpoint Discovery..."
+  # Install a remote secret in cluster2 that provides access to cluster1’s API server.
+  istioctl create-remote-secret \
+      --context="${CLUSTER1_CTX}" \
+      --name=cluster1 | \
+      kubectl apply -f - --context="${CLUSTER2_CTX}"
 
-# Install a remote secret in cluster1 that provides access to cluster2’s API server.
-istioctl create-remote-secret \
-    --context="${CLUSTER2_CTX}" \
-    --name=cluster2 | \
-    kubectl apply -f - --context="${CLUSTER1_CTX}"
-
-
+  # Install a remote secret in cluster1 that provides access to cluster2’s API server.
+  istioctl create-remote-secret \
+      --context="${CLUSTER2_CTX}" \
+      --name=cluster2 | \
+      kubectl apply -f - --context="${CLUSTER1_CTX}"
+fi
 
