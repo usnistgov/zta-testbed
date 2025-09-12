@@ -13,27 +13,32 @@ LOC="$PWD"
 
 # install certs in both clusters
 kubectl create namespace istio-system --context=${CLUSTER1_CTX}
-kubectl create secret generic cacerts -n istio-system \
-      --from-file=${LOC}/certs/cluster1/ca-cert.pem \
-      --from-file=${LOC}/certs/cluster1/ca-key.pem \
-      --from-file=${LOC}/certs/cluster1/root-cert.pem \
-      --from-file=${LOC}/certs/cluster1/cert-chain.pem \
-      --context=${CLUSTER1_CTX}
-
 kubectl create namespace istio-system --context=${CLUSTER2_CTX}
-kubectl create secret generic cacerts -n istio-system \
-      --from-file=${LOC}/certs/cluster2/ca-cert.pem \
-      --from-file=${LOC}/certs/cluster2/ca-key.pem \
-      --from-file=${LOC}/certs/cluster2/root-cert.pem \
-      --from-file=${LOC}/certs/cluster2/cert-chain.pem \
-      --context=${CLUSTER2_CTX}
+
+#kubectl create secret generic cacerts -n istio-system \
+#      --from-file=${LOC}/certs/cluster1/ca-cert.pem \
+#      --from-file=${LOC}/certs/cluster1/ca-key.pem \
+#      --from-file=${LOC}/certs/cluster1/root-cert.pem \
+#      --from-file=${LOC}/certs/cluster1/cert-chain.pem \
+#      --context=${CLUSTER1_CTX}
+
+#kubectl create secret generic cacerts -n istio-system \
+#      --from-file=${LOC}/certs/cluster2/ca-cert.pem \
+#      --from-file=${LOC}/certs/cluster2/ca-key.pem \
+#      --from-file=${LOC}/certs/cluster2/root-cert.pem \
+#      --from-file=${LOC}/certs/cluster2/cert-chain.pem \
+#      --context=${CLUSTER2_CTX}
+
+# spire 네임스페이스는 사이드카 주입 제외(중복 방지)
+kubectl label ns spire istio-injection- --context=${CLUSTER1_CTX} --overwrite || true
+kubectl label ns spire istio-injection- --context=${CLUSTER2_CTX} --overwrite || true
 
 
 # Set the default network for cluster1,2
-kubectl --context="${CTX_CLUSTER1}" get namespace istio-system && \                                
-kubectl --context="${CTX_CLUSTER1}" label namespace istio-system topology.istio.io/network=network1
-kubectl --context="${CTX_CLUSTER2}" get namespace istio-system && \
-kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.io/network=network2
+kubectl --context="${CLUSTER1_CTX}" get namespace istio-system && \                                
+kubectl --context="${CLUSTER1_CTX}" label namespace istio-system topology.istio.io/network=network1
+kubectl --context="${CLUSTER2_CTX}" get namespace istio-system && \
+kubectl --context="${CLUSTER2_CTX}" label namespace istio-system topology.istio.io/network=network2
 
 
 
@@ -41,18 +46,18 @@ kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.
 
 # Configure cluster1 as a primary
 echo "Installing istio in $CLUSTER1_NAME..."
-istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}/cluster1.yaml --skip-confirmation
+istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}/cluster1-SPIRE-trustDomain.yaml --skip-confirmation
 
 # Configure cluster2 as a primary
 echo "Installing istio in $CLUSTER2_NAME..."
-istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2.yaml --skip-confirmation
+istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2-SPIRE-trustDomain.yaml --skip-confirmation
 
 
 
 # Install the east-west gateway in cluster1
 #  (cf.)  samples/multicluster/gen-eastwest-gateway.sh --network network1 
 #
-istioctl --context="${CTX_CLUSTER1}" install -y -f - <<EOF
+istioctl --context="${CLUSTER1_CTX}" install -y -f - <<EOF
 apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 metadata:
@@ -96,7 +101,7 @@ spec:
 EOF
 
 # Expose services in cluster1
-kubectl --context="${CTX_CLUSTER1}" apply -n istio-system -f - <<EOF
+kubectl --context="${CLUSTER1_CTX}" apply -n istio-system -f - <<EOF
 apiVersion: networking.istio.io/v1
 kind: Gateway
 metadata:
@@ -122,7 +127,7 @@ EOF
 # Install the east-west gateway in cluster2
 #  (cf.)  samples/multicluster/gen-eastwest-gateway.sh --network network2 
 #
-istioctl --context="${CTX_CLUSTER2}" install -y -f - <<EOF
+istioctl --context="${CLUSTER2_CTX}" install -y -f - <<EOF
 apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 metadata:
@@ -166,7 +171,7 @@ spec:
 EOF
 
 # Expose services in cluster1
-kubectl --context="${CTX_CLUSTER2}" apply -n istio-system -f - <<EOF
+kubectl --context="${CLUSTER2_CTX}" apply -n istio-system -f - <<EOF
 apiVersion: networking.istio.io/v1
 kind: Gateway
 metadata:

@@ -1,0 +1,15 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  profile: demo
+  meshConfig:
+    trustDomain: example.org
+    trustDomainAliases:
+      - cluster.local
+  values:
+    global:
+      trustDomain: example.org
+      meshID: mesh1
+      multiCluster:
+        clusterName: cluster1
+      network: network1
