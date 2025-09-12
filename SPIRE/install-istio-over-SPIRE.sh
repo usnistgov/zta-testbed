@@ -40,7 +40,7 @@ fi
 
 
 # Set the default network for cluster1,2
-kubectl --context="${CLUSTER1_CTX}" get namespace istio-system && \                                
+kubectl --context="${CLUSTER1_CTX}" get namespace istio-system && \
 kubectl --context="${CLUSTER1_CTX}" label namespace istio-system topology.istio.io/network=network1
 
 if ! $ONLY_CLUSTER1; then
