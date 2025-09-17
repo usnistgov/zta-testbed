@@ -1,0 +1,85 @@
+
+Not working well - 1) 2)
+
+1) (한 번만) 부트스트랩 오버라이드 ConfigMap 만들기
+---------------------------------------------------
+#  Envoy가 참조하는 sds-grpc 클러스터를 SPIRE agent의 UDS(/run/spire/agent-sockets/agent.sock)로 강제합니다. 
+#  그러면 pilot-agent SDS가 떠 있어도 Envoy는 SPIRE 쪽으로만 붙습니다.
+#
+
+kubectl -n sample apply -f - <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-bootstrap
+  namespace: sample
+data:
+  custom_bootstrap.json: |
+    {
+      "static_resources": {
+        "clusters": [
+           {
+            "name": "sds-grpc",
+            "type": "STATIC",
+            "connect_timeout": "1s",
+            "load_assignment": {
+              "cluster_name": "sds-grpc",
+              "endpoints": [
+                {
+                  "lb_endpoints": [
+                    {
+                      "endpoint": {
+                        "address": {
+                          "pipe": { "path": "/run/spire/agent-sockets/agent.sock" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+YAML
+
+#  기본 Istio 부트스트랩도 sds-grpc라는 이름의 클러스터를 씁니다. 
+#  위처럼 그 이름만 동일하게 두고 pipe.path 를 SPIRE UDS로 오버라이드하면 Envoy는 SPIRE로 붙습니다.
+#
+
+
+2) httpbin에 오버라이드 적용 (주석 + 볼륨은 이미 있음)
+------------------------------------------------------
+
+kubectl -n sample patch deploy/httpbin --type=merge -p '{
+  "spec":{"template":{"metadata":{"annotations":{
+    "sidecar.istio.io/bootstrapOverride":"spire-bootstrap"
+  }}}}}'
+
+kubectl -n sample rollout restart deploy/httpbin
+kubectl -n sample rollout status  deploy/httpbin
+
+
+
+
+
+3) check out
+-------------
+
+HP=$(kubectl -n sample get pod -l app=httpbin -o jsonpath='{.items[0].metadata.name}')
+
+# 부트스트랩에서 sds-grpc 파이프 경로가 SPIRE UDS로 바뀌었는지
+istioctl -n sample pc bootstrap pod/$HP -o json \
+| jq '.static_resources.clusters[]
+      | select(.name=="sds-grpc")
+      | .load_assignment.endpoints[0].lb_endpoints[0].endpoint.address.pipe.path'
+# => "/run/spire/agent-sockets/agent.sock" 이어야 합니다.
+
+istioctl -n sample pc secret pod/$HP -o json \
+| jq -r '.dynamicActiveSecrets[]|select(.name=="default")|.secret.tlsCertificate.certificateChain.inlineBytes' \
+| base64 -d | openssl x509 -noout -text | egrep 'Issuer:|URI:'
+# 기대: URI = spiffe://example.org/ns/sample/sa/default
+#       Issuer = (SPIRE의 CA)  ← 여기서 "Istio, Intermediate CA"가 아니어야 정상
+
+

@@ -1,0 +1,86 @@
+# chatGPT genereated iop-ew-cluster1.yaml
+# iop-ew-cluster1.yaml
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: eastwest
+  namespace: istio-system
+spec:
+  meshConfig:
+    trustDomain: example.org
+    trustDomainAliases:
+      - cluster.local
+  profile: empty
+  components:
+    ingressGateways:
+    - name: istio-eastwestgateway
+      enabled: true
+      label:
+        istio: eastwestgateway
+        app: istio-eastwestgateway
+        topology.istio.io/network: network1
+      k8s:
+        env:
+        - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+          value: network1
+        service:
+          type: LoadBalancer
+          ports:
+          - name: status-port
+            port: 15021
+            targetPort: 15021
+          - name: tls
+            port: 15443
+            targetPort: 15443
+          - name: tls-istiod
+            port: 15012
+            targetPort: 15012
+          - name: tls-webhook
+            port: 15017
+            targetPort: 15017
+        overlays:
+        - apiVersion: apps/v1
+          kind: Deployment
+          name: istio-eastwestgateway
+          patches:
+          # 1) SPIRE UDS 볼륨 추가
+          - path: spec.template.spec.volumes.[name:workload-socket]
+            value:
+              name: workload-socket
+              csi:
+                driver: "csi.spiffe.io"
+                readOnly: true
+          # 2) Envoy(istio-proxy)에 마운트 추가
+          - path: spec.template.spec.containers.[name:istio-proxy].volumeMounts.[name:workload-socket]
+            value:
+              name: workload-socket
+              mountPath: "/run/secrets/workload-spiffe-uds"
+              readOnly: true
+          # 3) (선택) 소켓 등장까지 대기하는 initContainer
+          #    공식 문서와 동일하게 'initContainers' 전체 리스트로 지정
+          - path: spec.template.spec.initContainers
+            value:
+            - name: wait-for-spire-socket
+              image: busybox:1.36
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+              env:
+              - name: CHECK_FILE
+                value: /run/secrets/workload-spiffe-uds/socket
+              command:
+              - sh
+              - "-c"
+              - |
+                echo "$(date -Iseconds)" Waiting for: ${CHECK_FILE}
+                while [[ ! -S ${CHECK_FILE} ]]; do
+                  echo "$(date -Iseconds)" File does not exist: ${CHECK_FILE}
+                  sleep 15
+                done
+                ls -l ${CHECK_FILE}
+
+  values:
+    global:
+      network: network1
+

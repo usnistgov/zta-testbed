@@ -1,0 +1,782 @@
+
+ Installation procedures with SPIRE, Istio, eastwestgateway
+============================================================
+
+
+
+1. SPIRE install
+-----------------
+(https://istio.io/latest/docs/ops/integrations/spire/)
+
+  helm upgrade --install -n spire-server spire-crds spire-crds --repo https://spiffe.github.io/helm-charts-hardened/ --create-namespace
+  helm upgrade --install -n spire-server spire spire --repo https://spiffe.github.io/helm-charts-hardened/ --wait --set global.spire.trustDomain="example.org"
+
+
+    <logs>{{{
+	clu1 [33]{.../security/spire}# helm upgrade --install -n spire-server spire-crds spire-crds --repo https://spiffe.github.io/helm-charts-hardened/ --create-namespace
+	Release "spire-crds" does not exist. Installing it now.
+	NAME: spire-crds
+	LAST DEPLOYED: Mon Sep 15 22:19:07 2025
+	NAMESPACE: spire-server
+	STATUS: deployed
+	REVISION: 1
+	TEST SUITE: None
+
+
+	clu1 [34]{.../security/spire}# helm upgrade --install -n spire-server spire spire --repo https://spiffe.github.io/helm-charts-hardened/ --wait --set global.spire.trustDomain="example.org"
+
+	Release "spire" does not exist. Installing it now.
+	NAME: spire
+	LAST DEPLOYED: Mon Sep 15 22:19:43 2025
+	NAMESPACE: spire-server
+	STATUS: deployed
+	REVISION: 1
+	NOTES:
+	Installed spire…
+
+	Spire CR's will be handled only if className is set to "spire-server-spire"/*}}}*/
+
+
+
+2. Metallb LoadBalancer install
+-------------------------------
+(confer. shell script)
+
+  kubectl apply  -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
+  kubectl apply  -f - <<EOF
+  ---
+  apiVersion: metallb.io/v1beta1
+  kind: IPAddressPool
+  metadata:
+	name: lb-pool
+	namespace: metallb-system
+  spec:
+	addresses:
+	- ${PREFIX3}.100-${PREFIX3}.119
+  ---
+  apiVersion: metallb.io/v1beta1
+  kind: L2Advertisement
+  metadata:
+	name: lb-adv
+	namespace: metallb-system
+  EOF
+
+
+
+
+
+
+
+3. install-istio.sh
+--------------------
+Using install-istio.sh script, execute until 'Set the default network for cluster1,2'
+
+  
+  LOC="$PWD"
+  . ../env-istio.sh
+
+  # install certs in both clusters
+  kubectl create namespace istio-system --context=${CLUSTER1_CTX}
+  kubectl create secret generic cacerts -n istio-system \
+		--from-file=${LOC}/certs/cluster1/ca-cert.pem \
+		--from-file=${LOC}/certs/cluster1/ca-key.pem \
+		--from-file=${LOC}/certs/cluster1/root-cert.pem \
+		--from-file=${LOC}/certs/cluster1/cert-chain.pem \
+		--context=${CLUSTER1_CTX}
+
+  kubectl create namespace istio-system --context=${CLUSTER2_CTX}
+  kubectl create secret generic cacerts -n istio-system \
+		--from-file=${LOC}/certs/cluster2/ca-cert.pem \
+		--from-file=${LOC}/certs/cluster2/ca-key.pem \
+		--from-file=${LOC}/certs/cluster2/root-cert.pem \
+		--from-file=${LOC}/certs/cluster2/cert-chain.pem \
+		--context=${CLUSTER2_CTX}
+
+
+  # Set the default network for cluster1,2
+  kubectl --context="${CTX_CLUSTER1}" get namespace istio-system && \
+  kubectl --context="${CTX_CLUSTER1}" label namespace istio-system topology.istio.io/network=network1
+  kubectl --context="${CTX_CLUSTER2}" get namespace istio-system && \
+  kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.io/network=network2
+
+
+
+
+
+4. Auto-registration using the SPIRE Controller Manager 
+-------------------------------------------------------
+
+< gateways-clusterspiffeid.yaml >
+
+  kind: ClusterSPIFFEID
+  metadata:
+	name: istio-gateways
+  spec:
+	className: spire-server-spire
+	spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+	namespaceSelector:
+	  matchLabels:
+		kubernetes.io/metadata.name: istio-system
+	podSelector:
+	  matchExpressions:
+	  - key: app
+		operator: In
+		values: ["istio-ingressgateway","istio-eastwestgateway"]
+	workloadSelectorTemplates:
+	  - "k8s:ns:{{ .PodMeta.Namespace }}"
+	  - "k8s:sa:{{ .PodSpec.ServiceAccountName }}"
+
+
+  clu1 [50]{~}# k apply -f $LOC_SPIRE/test3/gateways-clusterspiffeid.yaml
+  clusterspiffeid.spire.spiffe.io/istio-gateways created
+
+
+
+
+5. Istio Operator (IOP) for ingressgateway 
+-------------------------------------------
+(from Official website)
+
+istioctl install -f $LOC_SPIRE/test3/IOP-ingress-fromOfficial.yaml --skip-confirmation
+
+
+< IOP-ingress-fromOfficial.yaml >{{{
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  namespace: istio-system
+spec:
+  profile: default
+  meshConfig:
+    trustDomain: example.org
+  values:
+    # This is used to customize the sidecar template.
+    # It adds both the label to indicate that SPIRE should manage the
+    # identity of this pod, as well as the CSI driver mounts.
+    sidecarInjectorWebhook:
+      templates:
+        spire: |
+          labels:
+            spiffe.io/spire-managed-identity: "true"
+          spec:
+            containers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+  components:
+    ingressGateways:
+      - name: istio-ingressgateway
+        enabled: true
+        label:
+          istio: ingressgateway
+        k8s:
+          overlays:
+            # This is used to customize the ingress gateway template.
+            # It adds the CSI driver mounts, as well as an init container
+            # to stall gateway startup until the CSI driver mounts the socket.
+            - apiVersion: apps/v1
+              kind: Deployment
+              name: istio-ingressgateway
+              patches:
+                - path: spec.template.spec.volumes.[name:workload-socket]
+                  value:
+                    name: workload-socket
+                    csi:
+                      driver: "csi.spiffe.io"
+                      readOnly: true
+                - path: spec.template.spec.containers.[name:istio-proxy].volumeMounts.[name:workload-socket]
+                  value:
+                    name: workload-socket
+                    mountPath: "/run/secrets/workload-spiffe-uds"
+                    readOnly: true
+                - path: spec.template.spec.initContainers
+                  value:
+                    - name: wait-for-spire-socket
+                      image: busybox:1.36
+                      volumeMounts:
+                        - name: workload-socket
+                          mountPath: /run/secrets/workload-spiffe-uds
+                          readOnly: true
+                      env:
+                        - name: CHECK_FILE
+                          value: /run/secrets/workload-spiffe-uds/socket
+                      command:
+                        - sh
+                        - "-c"
+                        - |-
+                          echo "$(date -Iseconds)" Waiting for: ${CHECK_FILE}
+                          while [[ ! -e ${CHECK_FILE} ]] ; do
+                            echo "$(date -Iseconds)" File does not exist: ${CHECK_FILE}
+                            sleep 15
+                          done
+                          ls -l ${CHECK_FILE}/*}}}*/
+
+
+  clu1 [51]{~}# istioctl install -f $LOC_SPIRE/test3/IOP-ingress-fromOfficial.yaml --skip-confirmation
+		  |\
+		  | \
+		  |  \
+		  |   \
+		/||    \
+	   / ||     \
+	  /  ||      \
+	 /   ||       \
+	/    ||        \
+   /     ||         \
+  /______||__________\
+  ____________________
+	\__       _____/
+	   \_____/
+
+  WARNING: Istio 1.24.0 may be out of support (EOL) already: see https://istio.io/latest/docs/releases/supported-releases/ for supported releases
+  ✔ Istio core installed ⛵️
+  ✔ Istiod installed 🧠
+  ✔ Ingress gateways installed 🛬
+  - Pruning removed resources                                                                                                            Removed apps/v1, Kind=Deployment/istio-egressgateway.istio-system.
+	Removed /v1, Kind=Service/istio-egressgateway.istio-system.
+	Removed /v1, Kind=ServiceAccount/istio-egressgateway-service-account.istio-system.
+	Removed rbac.authorization.k8s.io/v1, Kind=RoleBinding/istio-egressgateway-sds.istio-system.
+	Removed rbac.authorization.k8s.io/v1, Kind=Role/istio-egressgateway-sds.istio-system.
+	Removed policy/v1, Kind=PodDisruptionBudget/istio-egressgateway.istio-system.
+  ✔ Installation complete
+
+
+
+
+
+
+6. Istio Operator (IOP) for EastWestGateway
+-------------------------------------------
+< iop-ew-cluster1.yaml >
+  clu1 [58]{~}# istioctl install -f $LOC_SPIRE/test3/iop-ew-cluster1-3.yaml
+
+# chatGPT genereated iop-ew-cluster1.yaml
+# iop-ew-cluster1.yaml{{{
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: eastwest
+  namespace: istio-system
+spec:
+  meshConfig:
+    trustDomain: example.org
+    trustDomainAliases:
+      - cluster.local
+  profile: empty
+  components:
+    ingressGateways:
+    - name: istio-eastwestgateway
+      enabled: true
+      label:
+        istio: eastwestgateway
+        app: istio-eastwestgateway
+        topology.istio.io/network: network1
+      k8s:
+        env:
+        - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+          value: network1
+        service:
+          type: LoadBalancer
+          ports:
+          - name: status-port
+            port: 15021
+            targetPort: 15021
+          - name: tls
+            port: 15443
+            targetPort: 15443
+          - name: tls-istiod
+            port: 15012
+            targetPort: 15012
+          - name: tls-webhook
+            port: 15017
+            targetPort: 15017
+        overlays:
+        - apiVersion: apps/v1
+          kind: Deployment
+          name: istio-eastwestgateway
+          patches:
+          # 1) SPIRE UDS 볼륨 추가
+          - path: spec.template.spec.volumes.[name:workload-socket]
+            value:
+              name: workload-socket
+              csi:
+                driver: "csi.spiffe.io"
+                readOnly: true
+          # 2) Envoy(istio-proxy)에 마운트 추가
+          - path: spec.template.spec.containers.[name:istio-proxy].volumeMounts.[name:workload-socket]
+            value:
+              name: workload-socket
+              mountPath: "/run/secrets/workload-spiffe-uds"
+              readOnly: true
+          # 3) (선택) 소켓 등장까지 대기하는 initContainer
+          #    공식 문서와 동일하게 'initContainers' 전체 리스트로 지정
+          - path: spec.template.spec.initContainers
+            value:
+            - name: wait-for-spire-socket
+              image: busybox:1.36
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+              env:
+              - name: CHECK_FILE
+                value: /run/secrets/workload-spiffe-uds/socket
+              command:
+              - sh
+              - "-c"
+              - |
+                echo "$(date -Iseconds)" Waiting for: ${CHECK_FILE}
+                while [[ ! -S ${CHECK_FILE} ]]; do
+                  echo "$(date -Iseconds)" File does not exist: ${CHECK_FILE}
+                  sleep 15
+                done
+                ls -l ${CHECK_FILE}
+
+  values:
+    global:
+      network: network1/*}}}*/
+
+
+
+  clu1 [58]{~}# istioctl install -f $LOC_SPIRE/test3/iop-ew-cluster1-3.yaml
+		  |\
+		  | \
+		  |  \
+		  |   \
+		/||    \
+	   / ||     \
+	  /  ||      \
+	 /   ||       \
+	/    ||        \
+   /     ||         \
+  /______||__________\
+  ____________________
+	\__       _____/
+	   \_____/
+
+  WARNING: Istio 1.24.0 may be out of support (EOL) already: see https://istio.io/latest/docs/releases/supported-releases/ for supported releases
+  This will install the Istio 1.24.3 profile "empty" into the cluster. Proceed? (y/N) y
+  ✔ Ingress gateways installed 🛬
+  ✔ Installation complete
+
+
+
+
+
+
+7. istio-install.sh again for the rest 
+---------------------------------------
+
+1) # Expose services in cluster1
+kubectl --context="${CTX_CLUSTER1}" apply -n istio-system -f - <<EOF
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+spec:
+  selector:
+    istio: eastwestgateway
+  servers:
+    - port:
+        number: 15443
+        name: tls
+        protocol: TLS
+      tls:
+        mode: AUTO_PASSTHROUGH
+      hosts:
+        - "*.local"
+EOF
+
+
+
+2) # Enable Endpoint Discovery
+echo "Enable Endpoint Discovery..."
+# Install a remote secret in cluster2 that provides access to cluster1’s API server.
+istioctl create-remote-secret \
+    --context="${CLUSTER1_CTX}" \
+    --name=cluster1 | \
+    kubectl apply -f - --context="${CLUSTER2_CTX}"
+
+# Install a remote secret in cluster1 that provides access to cluster2’s API server.
+istioctl create-remote-secret \
+    --context="${CLUSTER2_CTX}" \
+    --name=cluster2 | \
+    kubectl apply -f - --context="${CLUSTER1_CTX}"
+
+
+
+-- check
+  clu1 [119]{~}# istioctl remote-clusters --context="${CTX_CLUSTER2}"
+  NAME         SECRET                                        STATUS     ISTIOD
+  cluster2                                                   synced     istiod-7cd48c8888-4hlj4
+  cluster1     istio-system/istio-remote-secret-cluster1     synced     istiod-7cd48c8888-4hlj4
+
+  clu1 [133]{~}# istioctl remote-clusters --context="${CTX_CLUSTER1}"
+  NAME           SECRET                                        STATUS     ISTIOD
+  Kubernetes                                                   synced     istiod-6cc57f9897-vz6nx
+  cluster2       istio-system/istio-remote-secret-cluster2     synced     istiod-6cc57f9897-vz6nx
+
+
+
+
+
+8. httpbin, curl deploy and check SPIRE SVID
+---------------------------------------------
+0) testfiles, 
+	- curl-spire.yaml
+	- example_test-deploy-httpbin-service-spire.yaml
+
+
+1) important points when deployment
+
+  labels:
+	app: httpbin
+	spiffe.io/spire-managed-identity: "true"     # [중요] SPIRE 관리 ID 스위치
+  annotations:
+	inject.istio.io/templates: "sidecar,spire"   # [중요] SPIRE 템플릿 주입
+
+
+2) deploy with the following command:
+  istioctl kube-inject --filename <file> | kubectl apply -f -
+
+
+
+  < logs >
+	# HP=$(kubectl get pod -n sample -l app=httpbin -o jsonpath="{.items[0].metadata.name}")
+	# echo $HP
+	httpbin-7c79fc6cb5-np2h4 
+
+
+	# istioctl proxy-config secret "$HP" -n sample -o json | jq -r \
+	'.dynamicActiveSecrets[0].secret.tlsCertificate.certificateChain.inlineBytes' | base64 --decode > chain-hp.pem
+
+	# openssl x509 -in chain-hp.pem -text | grep SPIRE
+			Subject: C = US, O = SPIRE
+
+	# istioctl kube-inject --filename samples/security/spire/curl-spire.yaml | kubectl apply -f -
+	serviceaccount/curl created
+	service/curl created
+	deployment.apps/curl created
+
+
+
+	# CURL_POD=$(kubectl -n default get pod -l app=curl -o jsonpath='{.items[0].metadata.name}')
+	# echo $CURL_POD
+	curl-6d6946c997-2bsgd
+
+
+	# kubectl -n default exec "$CURL_POD" -c curl -- \
+	  curl -vsS http://httpbin.sample.svc.cluster.local/get
+	* Host httpbin.sample.svc.cluster.local:80 was resolved.
+	* IPv6: (none)
+	* IPv4: 10.106.33.172
+	*   Trying 10.106.33.172:80...
+	* Established connection to httpbin.sample.svc.cluster.local (10.106.33.172 port 80) from 192.168.0.218 port 49882
+	* using HTTP/1.x
+	> GET /get HTTP/1.1
+	> Host: httpbin.sample.svc.cluster.local
+	> User-Agent: curl/8.16.0
+	> Accept: */*
+	>
+	* Request completely sent off
+	< HTTP/1.1 200 OK
+	< access-control-allow-credentials: true
+	< access-control-allow-origin: *
+	< content-type: application/json; charset=utf-8
+	< date: Wed, 17 Sep 2025 23:26:14 GMT
+	< content-length: 687
+	< x-envoy-upstream-service-time: 14
+	< server: envoy
+	<
+	{ [687 bytes data]
+	* Connection #0 to host httpbin.sample.svc.cluster.local:80 left intact
+	{
+	  "args": {},
+	  "headers": {
+		"Accept": [
+		  "*/*"
+		],
+		"Host": [
+		  "httpbin.sample.svc.cluster.local"
+		],
+		"User-Agent": [
+		  "curl/8.16.0"
+		],
+		"X-Envoy-Attempt-Count": [
+		  "1"
+		],
+		"X-Forwarded-Client-Cert": [
+		  "By=spiffe://example.org/ns/sample/sa/httpbin;Hash=74b2934c94be3a60b283fe80f765e510cd85b69659d8e160801d2ac229490886;Subject=\"O=SPIRE,C=US\";URI=spiffe://example.org/ns/default/sa/curl"
+		],
+		"X-Forwarded-Proto": [
+		  "http"
+		],
+		"X-Request-Id": [
+		  "e9478f98-43d8-4cbf-a2a7-976e9cb916ce"
+		]
+	  },
+	  "method": "GET",
+	  "origin": "127.0.0.6:54743",
+	  "url": "http://httpbin.sample.svc.cluster.local/get"
+	}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 체크리스트 after ew-gateway
+-----------------------------
+
+1) csi.spiffe.io 드라이버가 Ready인지 확인:
+
+    kubectl -n spire get ds spire-spiffe-csi-driver
+
+
+2) 오버레이 적용 후 게이트웨이 파드 안에서 소켓 확인:
+
+    kubectl -n istio-system exec deploy/istio-eastwestgateway -c istio-proxy -- \
+      ls -l /run/secrets/workload-spiffe-uds/socket
+
+
+3) Envoy 로그에 더 이상 workload is not authorized가 없어야 정상:
+
+    kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --tail=200 | grep -i sds
+
+
+
+ <logs>
+
+    clu1 [54]{~}# kubectl -n spire-server get ds spire-spiffe-csi-driver
+    NAME                      DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+    spire-spiffe-csi-driver   1         1         1       1            1           <none>          14h
+
+
+
+    clu1 [55]{~}# kubectl -n istio-system exec deploy/istio-ingressgateway -c istio-proxy -- \
+      ls -l /run/secrets/workload-spiffe-uds/socket
+    lrwxrwxrwx 1 root root 16 Sep 16 02:23 /run/secrets/workload-spiffe-uds/socket -> spire-agent.sock
+
+
+
+    clu1 [56]{~}# kubectl -n istio-system logs deploy/istio-ingressgateway -c istio-proxy --tail=200 | grep -i sds
+    2025-09-16T15:54:31.859724Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
+
+
+
+< more log >
+clu1 [102]{~}# kubectl -n spire-server exec spire-server-0 -- \
+  /opt/spire/bin/spire-server entry show -spiffeID spiffe://example.org/ns/istio-system/sa/${SA}
+Found 1 entry
+Entry ID         : example-cluster.10977e14-8471-4468-baca-a947be4bbd6a
+SPIFFE ID        : spiffe://example.org/ns/istio-system/sa/istio-eastwestgateway-service-account
+Parent ID        : spiffe://example.org/spire/agent/k8s_psat/example-cluster/f5028525-61da-4094-8751-fd967dba08bb
+Revision         : 0
+X509-SVID TTL    : default
+JWT-SVID TTL     : default
+Selector         : k8s:ns:istio-system
+Selector         : k8s:pod-uid:4095c053-a1a0-45c6-9fee-55b3407174f4
+Selector         : k8s:sa:istio-eastwestgateway-service-account
+
+
+clu1 [103]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway
+RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
+default           Cert Chain     ACTIVE     true           e2297715af017f8c2a9ca0df0d2a3b68     2025-09-16T21:59:09Z     2025-09-16T17:58:59Z
+ROOTCA                           ACTIVE     false
+
+
+clu1 [104]{~}# kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --since=2m | grep -i sds || true
+2025-09-16T17:59:09.565629Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
+
+
+
+clu1 [135]{~}# kubectl --context=cluster1 create ns sample --dry-run=client -o yaml | kubectl apply -f -
+namespace/sample created
+clu1 [136]{~}# kubectl --context=cluster1 label ns sample istio-injection=enabled --overwrite
+namespace/sample labeled
+clu1 [137]{~}#
+clu1 [137]{~}#
+clu1 [137]{~}# kubectl --context=cluster1 apply -n sample -f - <<EOF
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: httpbin
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: httpbin
+      template:
+        metadata:
+          labels:
+            app: httpbin
+        spec:
+          containers:
+          - name: httpbin
+            image: mccutchen/go-httpbin:v2.10.0
+            ports:
+            - containerPort: 8080
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: httpbin
+    spec:
+      selector:
+        app: httpbin
+      ports:
+      - port: 80
+        targetPort: 8080
+        name: http
+    EOF
+
+
+
+
+clu1 [147]{~}# k exec -n sample --context=cluster2  -it deploy/curl  -- curl -v --resolve httpbin.sample.svc.cluster.local:80:192.168.10.152  http://httpbin.sample.svc.cluster.local/get
+* Added httpbin.sample.svc.cluster.local:80:192.168.10.152 to DNS cache
+* Hostname httpbin.sample.svc.cluster.local was found in DNS cache
+*   Trying 192.168.10.152:80...
+* Connected to httpbin.sample.svc.cluster.local (192.168.10.152) port 80
+* using HTTP/1.x
+> GET /get HTTP/1.1
+> Host: httpbin.sample.svc.cluster.local
+> User-Agent: curl/8.13.0
+> Accept: */*
+>
+* Request completely sent off
+
+
+
+
+
+
+clu1 [103]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway
+RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
+default           Cert Chain     ACTIVE     true           e2297715af017f8c2a9ca0df0d2a3b68     2025-09-16T21:59:09Z     2025-09-16T17:58:59Z
+ROOTCA                           ACTIVE     false
+clu1 [104]{~}#
+clu1 [104]{~}# kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --since=2m | grep -i sds || true
+2025-09-16T17:59:09.565629Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
+clu1 [105]{~}#
+clu1 [105]{~}#
+clu1 [105]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway -o json | jq .
+{
+  "dynamicActiveSecrets": [
+    {
+      "name": "default",
+      "versionInfo": "1",
+      "lastUpdated": "2025-09-16T17:59:10.297Z",
+      "secret": {
+        "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
+        "name": "default",
+        "tlsCertificate": {
+          "certificateChain": {
+            "inlineBytes": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJVENDQWdtZ0F3SUJBZ0lSQU9JcGR4V3ZBWCtNS3B5ZzN3MHFPMmd3RFFZSktvWklodmNOQVFFTEJRQXcKYVRFTk1Bc0dBMVVFQmhNRVFWSlFRVEVRTUE0R0ExVUVDaE1IUlhoaGJYQnNaVEVVTUJJR0ExVUVBeE1MWlhoaApiWEJzWlM1dmNtY3hNREF1QmdOVkJBVVRKekl6TVRNeE1qTXhOVEUwTWpFMU1qTXhPVGcxTlRVNE16WXpNRFEwCk16RTFNelU0TnpneU5qQWVGdzB5TlRBNU1UWXhOelU0TlRsYUZ3MHlOVEE1TVRZeU1UVTVNRGxhTUIweEN6QUoKQmdOVkJBWVRBbFZUTVE0d0RBWURWUVFLRXdWVFVFbFNSVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSApBMElBQkVRT2laZitKcnczUmI2MkpnaHV1OFMxOGQ3MU0rbDEvNk9TUUJhZzZMTlJ1VXRxZk80SHV4KzRTQy83CkNZS1I4akVtSm1WSzB4WVQ0UXFJaVU5TVNuZWpnZG93Z2Rjd0RnWURWUjBQQVFIL0JBUURBZ09vTUIwR0ExVWQKSlFRV01CUUdDQ3NHQVFVRkJ3TUJCZ2dyQmdFRkJRY0RBakFNQmdOVkhSTUJBZjhFQWpBQU1CMEdBMVVkRGdRVwpCQlJub2JlOWtLN09sQW9vdHkwOUZncEtRcVdEdlRBZkJnTlZIU01FR0RBV2dCUjF5RFIwSEtIaFp1TllxYm9ICjZCQ212dW1QSHpCWUJnTlZIUkVFVVRCUGhrMXpjR2xtWm1VNkx5OWxlR0Z0Y0d4bExtOXlaeTl1Y3k5cGMzUnAKYnkxemVYTjBaVzB2YzJFdmFYTjBhVzh0WldGemRIZGxjM1JuWVhSbGQyRjVMWE5sY25acFkyVXRZV05qYjNWdQpkREFOQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBV1FWYndiNEE4YWovN0VseUM0d3p5RnpDb3ZTMVdlamp5b1oyCldKeUkyc0Zmb2I1Ui9UdStmeC9XUFEzY0xLcS81aHdVa1VKMTFpa3dKZnNEZUdvOWFZMGw3YXFFUWozRkgvTTcKd21vamJkYTZ5b3FzRGFTOE9pcGVCN256YmFRcUNvNWJwZURrb3NVd25keCtxNk9iK1BFc1RLVmxWUm1oM21HNgpQendZZ2QrK0lIZlh0ckg0c2QzSUhhaTFybG5uVW9LVkFDZGV4UVRrciszZWpkcWZSYng3SDlFcUk2cExTa2pUCnJpMWJpcllRb2dtS0hacFE5UHpLLy9qWmwvV0Jtb3pKVEREYVVzNzl5OVZLY2hkZ0V3ckNxTGJrQURSRVlpVnMKUmlyM2NEeVpyVzR1QmFscjNVKzRoN3F5bzFsd0FJQ0hObGNDaGRTYmtWUHFDbDBscWc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
+          },
+          "privateKey": {
+            "inlineBytes": "W3JlZGFjdGVkXQ=="
+          }
+        }
+      }
+    },
+    {
+      "name": "ROOTCA",
+      "versionInfo": "1",
+      "lastUpdated": "2025-09-16T17:59:10.286Z",
+      "secret": {
+        "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
+        "name": "ROOTCA",
+        "validationContext": {
+          "trustedCa": {},
+          "customValidatorConfig": {
+            "name": "envoy.tls.cert_validator.spiffe",
+            "typedConfig": {
+              "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.SPIFFECertValidatorConfig",
+              "trustDomains": [
+                {
+                  "name": "example.org",
+                  "trustBundle": {
+                    "inlineBytes": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUR3RENDQXFpZ0F3SUJBZ0lSQUs0RklhVDlLSWpsTnlBK0hUeWgvbkl3RFFZSktvWklodmNOQVFFTEJRQXcKYVRFTk1Bc0dBMVVFQmhNRVFWSlFRVEVRTUE0R0ExVUVDaE1IUlhoaGJYQnNaVEVVTUJJR0ExVUVBeE1MWlhoaApiWEJzWlM1dmNtY3hNREF1QmdOVkJBVVRKekl6TVRNeE1qTXhOVEUwTWpFMU1qTXhPVGcxTlRVNE16WXpNRFEwCk16RTFNelU0TnpneU5qQWVGdzB5TlRBNU1UWXdNakl5TlRKYUZ3MHlOVEE1TVRjd01qSXpNREphTUdreERUQUwKQmdOVkJBWVRCRUZTVUVFeEVEQU9CZ05WQkFvVEIwVjRZVzF3YkdVeEZEQVNCZ05WQkFNVEMyVjRZVzF3YkdVdQpiM0puTVRBd0xnWURWUVFGRXljeU16RXpNVEl6TVRVeE5ESXhOVEl6TVRrNE5UVTFPRE0yTXpBME5ETXhOVE0xCk9EYzRNall3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRRHlZUEQreTJSMTREc1QKbGUzRDYxeG9PQkQ3ZUpNQXdqOWJmZ1FWSmRUT0FJdjFzWStjdkZvbUlycjUxUnBuZnVGN3g1emtuMEZVY3I2ZgpFS0c5T3ZJd2w3UUIxTlNPZGlkU3BDQ1J3QjZDcU9VQnZrMlRuOWxIeE1ZUnF2TEJQdytTaXZvTmptK1hYQkdYCkUwT2g4R25rMG1mdm9PV2gwbWxLUkRqVGNKUytCTTVKaWR2dlF6SEhCM1lVUzJXRlNOYzNIbXFlUTI3KzZIRUoKS3hoV1I5OUwrRTkxYXdITXZhU2YxWlo1SVBCZE5ZOTdpRW4vRmphaXk2dmh2Znd1WUtRSllVSHZtRTUvV0xZYgpvc3hMZVVBV1dXaDMzcmxDbVFlUFp1NXNlZUx2bTRqc3FmQjd6TmlkZnIrcDRQODU2dzdTdm1QQzZwTXVOUUtaCmFzLzF4NmI1QWdNQkFBR2pZekJoTUE0R0ExVWREd0VCL3dRRUF3SUJCakFQQmdOVkhSTUJBZjhFQlRBREFRSC8KTUIwR0ExVWREZ1FXQkJSMXlEUjBIS0hoWnVOWXFib0g2QkNtdnVtUEh6QWZCZ05WSFJFRUdEQVdoaFJ6Y0dsbQpabVU2THk5bGVHRnRjR3hsTG05eVp6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUEwSHJ3V2RMbERrTnFhd2lnClozUzBVSitKMlFNVXNVOFVPK1lEV1ZEb0Y1SENmRDFCcmZjeEJKQ2RMNUJtNXRiSTBrT1F3Q2Z0SWVPemVWcXoKcmFmT2F2R2QyWXlYYlFmNnJzVzdSWGxYL1ZOK1BCWG1lYmVrdnYvTUwwMmRKbkpUVHRWd1ZlRXBDUE5sTzJSdApTb0dmSmxuZWRIQ3VxaVhwalB5VVNjMmh1Q1EyeUU0VDc5bnNaL3lWc2tiMmxWWkVIbEZrRnBjWHV6SFVwcDkwCm5hdlcyT1VjOEh1WU00WXUzYUw5QXhmKzFJdHRCdVM2cUs5YldtWWsxRnVBUzlBZVQrNTc5L2VYMVNvdlI1MlYKUFNkTXpZTGFPRVFTY0FWLzZzV2d2c0UrQllWYTdlK241d0JoUkhrZjFmUE1sSlVtYjRRWmM5K2lia0M0ZnJBZQozNFBpQWc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlEdnpDQ0FxZWdBd0lCQWdJUVUxKzJwV2FMQ3FHL0NNZjVTYk9QbHpBTkJna3Foa2lHOXcwQkFRc0ZBREJwCk1RMHdDd1lEVlFRR0V3UkJVbEJCTVJBd0RnWURWUVFLRXdkRmVHRnRjR3hsTVJRd0VnWURWUVFERXd0bGVHRnQKY0d4bExtOXlaekV3TUM0R0ExVUVCUk1uTVRFd09ESXlPRGsyTXpVME5qTTVNRFkzTkRNeE5ERTRPVGN4TmpVeQpORGczTXpVeU1qRTFNQjRYRFRJMU1Ea3hOakUwTWpNd01Wb1hEVEkxTURreE56RTBNak14TVZvd2FURU5NQXNHCkExVUVCaE1FUVZKUVFURVFNQTRHQTFVRUNoTUhSWGhoYlhCc1pURVVNQklHQTFVRUF4TUxaWGhoYlhCc1pTNXYKY21jeE1EQXVCZ05WQkFVVEp6RXhNRGd5TWpnNU5qTTFORFl6T1RBMk56UXpNVFF4T0RrM01UWTFNalE0TnpNMQpNakl4TlRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBUEdaanBBOFRCTzVNTGk4Ckl6cVFEWWEwNkRraDBjQWNNZ29TeDllY2VHc2NpcVVsV2N4WlNBYXlnZXdtSDhoRWlFMHdZd2k5SFZ4eVdWQjQKaEQxUHlQdW40UVp4WjUvNS9MNEM0b09vcVZ2SEpvb0lKZmZZZzlSSThOTlNwYUdxU0xZWkt6MnBzVWZlVFJ1Wgp6MnMrL0pTRmhLNGFwS1RXZ2IyaSs4eExoUHk3Y2U0RjF3MnI4MkRVMTJCR3VVMDVoaFdaVnFnQ05TSmtrMDdCCnIvaTVFY01LRmZuTFZNSWM3MUlmTlVaM2l2aktZOFJ4dTRkZjk0Vytvd1F2Q1ZDZldPNnNtM29PRng1c08rdkUKdTRPV0VNUVpZeGpveDBZV0wxQ0pNdSs1R2Rmblc2czROT3hyY2ZFZlh1SUZ1WDU3VzkyZ29rMmRnMlpUNmc2TgoyQkpHdTFjQ0F3RUFBYU5qTUdFd0RnWURWUjBQQVFIL0JBUURBZ0VHTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3CkhRWURWUjBPQkJZRUZMdEN6MVplUDc0eXo2cG5UUFZlcDVWL3BQVFFNQjhHQTFVZEVRUVlNQmFHRkhOd2FXWm0KWlRvdkwyVjRZVzF3YkdVdWIzSm5NQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUNQZUJNb25EajFZTzVqODJpNQpseUlZN3V6cUdCQ0N5MUdOUkRTVnFNdzRCL0h1aGpZWVBaRTZReWx2RU9tTWdzSTdqK1hGT25GTCtqMnRkZFdBCmhPRFRDdU5NeVN6MFpvZWRVNmhrS1ZDcE1zWm9pSEZxbEFJQ1NhUGhzWURNYWo1eVFwaHVCQms1Q25PRXZOVzUKSVVHVVY0UldhbmxOQVpEalRQRGhKdnRMWDJTa2JkZVVQbGhLR0I1QWFydmZ3UEpRYWxNT2pEMFhML1ZMcmJlLwphZlBta2N4d1R2UHM1UmY3TVdEOGRrdEgxSXQ4djhHdUpIQkoyRUIxRTJSUVBPbFNJMzFIYlU3ZHUxaGFPQzdYCmE3WnUxalI5aGlrT3lTZE1MWnJDa1M0WXNYSUNxRFVFcWJQTGZZWFM2K3RHTGJUR3NkbTNiWjBXVWI3K3l1N2wKb3NXNgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+clu1 [106]{~}# istioctl -n istio-system pc clusters deploy/istio-eastwestgateway | grep -i sds
+sds-grpc                                                                -         -          -             STATIC
+clu1 [107]{~}#
+clu1 [107]{~}# istioctl -n istio-system pc listeners deploy/istio-eastwestgateway | grep -i spiffe
+clu1 [108]{~}#
+clu1 [108]{~}# kubectl -n spire exec -it spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem
+Error from server (NotFound): namespaces "spire" not found
+clu1 [109]{~}# kubectl -n spire-server exec -it spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem
+-----BEGIN CERTIFICATE-----
+MIIDwDCCAqigAwIBAgIRAK4FIaT9KIjlNyA+HTyh/nIwDQYJKoZIhvcNAQELBQAw
+aTENMAsGA1UEBhMEQVJQQTEQMA4GA1UEChMHRXhhbXBsZTEUMBIGA1UEAxMLZXhh
+bXBsZS5vcmcxMDAuBgNVBAUTJzIzMTMxMjMxNTE0MjE1MjMxOTg1NTU4MzYzMDQ0
+MzE1MzU4NzgyNjAeFw0yNTA5MTYwMjIyNTJaFw0yNTA5MTcwMjIzMDJaMGkxDTAL
+BgNVBAYTBEFSUEExEDAOBgNVBAoTB0V4YW1wbGUxFDASBgNVBAMTC2V4YW1wbGUu
+b3JnMTAwLgYDVQQFEycyMzEzMTIzMTUxNDIxNTIzMTk4NTU1ODM2MzA0NDMxNTM1
+ODc4MjYwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDyYPD+y2R14DsT
+le3D61xoOBD7eJMAwj9bfgQVJdTOAIv1sY+cvFomIrr51RpnfuF7x5zkn0FUcr6f
+EKG9OvIwl7QB1NSOdidSpCCRwB6CqOUBvk2Tn9lHxMYRqvLBPw+SivoNjm+XXBGX
+E0Oh8Gnk0mfvoOWh0mlKRDjTcJS+BM5JidvvQzHHB3YUS2WFSNc3HmqeQ27+6HEJ
+KxhWR99L+E91awHMvaSf1ZZ5IPBdNY97iEn/Fjaiy6vhvfwuYKQJYUHvmE5/WLYb
+osxLeUAWWWh33rlCmQePZu5seeLvm4jsqfB7zNidfr+p4P856w7SvmPC6pMuNQKZ
+as/1x6b5AgMBAAGjYzBhMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/
+MB0GA1UdDgQWBBR1yDR0HKHhZuNYqboH6BCmvumPHzAfBgNVHREEGDAWhhRzcGlm
+ZmU6Ly9leGFtcGxlLm9yZzANBgkqhkiG9w0BAQsFAAOCAQEA0HrwWdLlDkNqawig
+Z3S0UJ+J2QMUsU8UO+YDWVDoF5HCfD1BrfcxBJCdL5Bm5tbI0kOQwCftIeOzeVqz
+rafOavGd2YyXbQf6rsW7RXlX/VN+PBXmebekvv/ML02dJnJTTtVwVeEpCPNlO2Rt
+SoGfJlnedHCuqiXpjPyUSc2huCQ2yE4T79nsZ/yVskb2lVZEHlFkFpcXuzHUpp90
+navW2OUc8HuYM4Yu3aL9Axf+1IttBuS6qK9bWmYk1FuAS9AeT+579/eX1SovR52V
+PSdMzYLaOEQScAV/6sWgvsE+BYVa7e+n5wBhRHkf1fPMlJUmb4QZc9+ibkC4frAe
+34PiAg==
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIDvzCCAqegAwIBAgIQU1+2pWaLCqG/CMf5SbOPlzANBgkqhkiG9w0BAQsFADBp
+MQ0wCwYDVQQGEwRBUlBBMRAwDgYDVQQKEwdFeGFtcGxlMRQwEgYDVQQDEwtleGFt
+cGxlLm9yZzEwMC4GA1UEBRMnMTEwODIyODk2MzU0NjM5MDY3NDMxNDE4OTcxNjUy
+NDg3MzUyMjE1MB4XDTI1MDkxNjE0MjMwMVoXDTI1MDkxNzE0MjMxMVowaTENMAsG
+A1UEBhMEQVJQQTEQMA4GA1UEChMHRXhhbXBsZTEUMBIGA1UEAxMLZXhhbXBsZS5v
+cmcxMDAuBgNVBAUTJzExMDgyMjg5NjM1NDYzOTA2NzQzMTQxODk3MTY1MjQ4NzM1
+MjIxNTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAPGZjpA8TBO5MLi8
+IzqQDYa06Dkh0cAcMgoSx9eceGsciqUlWcxZSAaygewmH8hEiE0wYwi9HVxyWVB4
+hD1PyPun4QZxZ5/5/L4C4oOoqVvHJooIJffYg9RI8NNSpaGqSLYZKz2psUfeTRuZ
+z2s+/JSFhK4apKTWgb2i+8xLhPy7ce4F1w2r82DU12BGuU05hhWZVqgCNSJkk07B
+r/i5EcMKFfnLVMIc71IfNUZ3ivjKY8Rxu4df94W+owQvCVCfWO6sm3oOFx5sO+vE
+u4OWEMQZYxjox0YWL1CJMu+5GdfnW6s4NOxrcfEfXuIFuX57W92gok2dg2ZT6g6N
+2BJGu1cCAwEAAaNjMGEwDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8w
+HQYDVR0OBBYEFLtCz1ZeP74yz6pnTPVep5V/pPTQMB8GA1UdEQQYMBaGFHNwaWZm
+ZTovL2V4YW1wbGUub3JnMA0GCSqGSIb3DQEBCwUAA4IBAQCPeBMonDj1YO5j82i5
+lyIY7uzqGBCCy1GNRDSVqMw4B/HuhjYYPZE6QylvEOmMgsI7j+XFOnFL+j2tddWA
+hODTCuNMySz0ZoedU6hkKVCpMsZoiHFqlAICSaPhsYDMaj5yQphuBBk5CnOEvNW5
+IUGUV4RWanlNAZDjTPDhJvtLX2SkbdeUPlhKGB5AarvfwPJQalMOjD0XL/VLrbe/
+afPmkcxwTvPs5Rf7MWD8dktH1It8v8GuJHBJ2EB1E2RQPOlSI31HbU7du1haOC7X
+a7Zu1jR9hikOySdMLZrCkS4YsXICqDUEqbPLfYXS6+tGLbTGsdm3bZ0WUb7+yu7l
+osW6
+-----END CERTIFICATE-----
+
+
+

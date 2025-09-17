@@ -1,0 +1,41 @@
+
+
+최종 체크리스트
+---------------
+
+1. csi.spiffe.io 드라이버가 Ready인지 확인:
+
+	kubectl -n spire get ds spire-spiffe-csi-driver
+
+
+2. 오버레이 적용 후 게이트웨이 파드 안에서 소켓 확인:
+
+	kubectl -n istio-system exec deploy/istio-eastwestgateway -c istio-proxy -- \
+	  ls -l /run/secrets/workload-spiffe-uds/socket
+
+
+3. Envoy 로그에 더 이상 workload is not authorized가 없어야 정상:
+
+	kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --tail=200 | grep -i sds
+
+
+
+ <logs>
+
+	clu1 [54]{~}# kubectl -n spire-server get ds spire-spiffe-csi-driver
+	NAME                      DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+	spire-spiffe-csi-driver   1         1         1       1            1           <none>          14h
+
+
+
+	clu1 [55]{~}# kubectl -n istio-system exec deploy/istio-ingressgateway -c istio-proxy -- \
+	  ls -l /run/secrets/workload-spiffe-uds/socket
+	lrwxrwxrwx 1 root root 16 Sep 16 02:23 /run/secrets/workload-spiffe-uds/socket -> spire-agent.sock
+
+
+
+	clu1 [56]{~}# kubectl -n istio-system logs deploy/istio-ingressgateway -c istio-proxy --tail=200 | grep -i sds
+	2025-09-16T15:54:31.859724Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
+
+
+

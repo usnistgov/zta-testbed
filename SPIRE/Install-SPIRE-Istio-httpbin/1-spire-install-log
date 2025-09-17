@@ -1,0 +1,22 @@
+clu1 [33]{.../security/spire}# helm upgrade --install -n spire-server spire-crds spire-crds --repo https://spiffe.github.io/helm-charts-hardened/ --create-namespace
+Release "spire-crds" does not exist. Installing it now.
+NAME: spire-crds
+LAST DEPLOYED: Mon Sep 15 22:19:07 2025
+NAMESPACE: spire-server
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+
+
+clu1 [34]{.../security/spire}# helm upgrade --install -n spire-server spire spire --repo https://spiffe.github.io/helm-charts-hardened/ --wait --set global.spire.trustDomain="example.org"
+Release "spire" does not exist. Installing it now.
+NAME: spire
+LAST DEPLOYED: Mon Sep 15 22:19:43 2025
+NAMESPACE: spire-server
+STATUS: deployed
+REVISION: 1
+NOTES:
+Installed spire…
+
+Spire CR's will be handled only if className is set to "spire-server-spire"
+
