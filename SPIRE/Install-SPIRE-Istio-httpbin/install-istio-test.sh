@@ -197,15 +197,15 @@ EOF
 echo "Enable Endpoint Discovery..."
 # Install a remote secret in cluster2 that provides access to cluster1’s API server.
 istioctl create-remote-secret \
-    --context="${CLUSTER1_CTX}" \
+    --context="${CTX_CLUSTER1}" \
     --name=cluster1 | \
-    kubectl apply -f - --context="${CLUSTER2_CTX}"
+    kubectl apply -f - --context="${CTX_CLUSTER2}"
 
 # Install a remote secret in cluster1 that provides access to cluster2’s API server.
 istioctl create-remote-secret \
-    --context="${CLUSTER2_CTX}" \
+    --context="${CTX_CLUSTER2}" \
     --name=cluster2 | \
-    kubectl apply -f - --context="${CLUSTER1_CTX}"
+    kubectl apply -f - --context="${CTX_CLUSTER1}"
 
 
 
