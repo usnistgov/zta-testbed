@@ -427,6 +427,12 @@ istioctl create-remote-secret \
 
 
 
+
+
+
+
+
+
 8. httpbin, curl deploy and check SPIRE SVID
 ---------------------------------------------
 0) testfiles, 
@@ -445,6 +451,59 @@ istioctl create-remote-secret \
 
 2) deploy with the following command:
   istioctl kube-inject --filename <file> | kubectl apply -f -
+
+
+
+
+3) “이 SPIFFE ID가 SPIRE에서 온 것인가, istiod에서 온 것인가?” 확인법
+A. Issuer/Root CA 지문 비교(가장 확실)
+Envoy가 들고 있는 루트 CA를 꺼내서 SPIRE Server 번들과 비교합니다.
+
+# Envoy(istio-proxy)에서 SDS(secret) 덤프 → 루트CA 추출(쓰기 없이 파이프)
+kubectl -n sample exec deploy/httpbin -c istio-proxy -- \
+  curl -s "http://127.0.0.1:15000/config_dump?resource=dynamic_active_secrets" \
+| jq -r '.. | .trusted_ca? | .inline_bytes? // empty' \
+| head -n1 | base64 -d | openssl x509 -noout -fingerprint -sha256 -subject -issuer
+
+
+    clu1 [456]{~/istio-1.24.3}# base64 -d temp-httpbin.pem | openssl x509 -noout -fingerprint -sha256 -subject -issuer
+    sha256 Fingerprint=F3:A5:35:94:63:5D:48:FD:13:0E:D0:46:33:18:82:86:EE:5F:BE:08:9E:05:90:C5:53:DD:C3:84:68:CA:F0:35
+    subject=C = ARPA, O = Example, CN = example.org, serialNumber = 54857480667455777515616819882825865714
+    issuer=C = ARPA, O = Example, CN = example.org, serialNumber = 54857480667455777515616819882825865714
+
+      (where, temp-httpbin.pem generated from http://127.0.0.1:15000/config_dump?resource=dynamic_active_secrets.  
+        And to extract inline_bytes hexcode from trusted_ca into the file, temp-httpbin.pem)
+
+
+
+# SPIRE Server 번들(루트) fingerprint
+kubectl -n spire exec deploy/spire-server -- \
+  /opt/spire/bin/spire-server bundle show -format pem \
+| openssl x509 -noout -fingerprint -sha256 -subject -issuer
+
+
+두 결과의 SHA256 fingerprint / Issuer/Subject 가 같으면 ⇒ SPIRE 체인을 신뢰 중입니다.
+
+다르면 ⇒ 아직 istiod CA 체인을 쓰는 중일 가능성이 큽니다.
+
+    clu1 [455]{~/istio-1.24.3}# kubectl -n spire-server exec spire-server-0 -- \
+      /opt/spire/bin/spire-server bundle show -format pem |  openssl x509 -noout -fingerprint -sha256 -subject -issuer
+    sha256 Fingerprint=F3:A5:35:94:63:5D:48:FD:13:0E:D0:46:33:18:82:86:EE:5F:BE:08:9E:05:90:C5:53:DD:C3:84:68:CA:F0:35
+    subject=C = ARPA, O = Example, CN = example.org, serialNumber = 54857480667455777515616819882825865714
+    issuer=C = ARPA, O = Example, CN = example.org, serialNumber = 54857480667455777515616819882825865714
+
+--> 결과, 동일함
+
+
+B. Envoy 부트스트랩에서 SDS 소스 확인
+Envoy가 인증서를 어디서 가져오는지(=SPIRE Agent UDS인지, istiod gRPC인지) 확인합니다.
+
+    # istioctl proxy-config bootstrap -n sample deploy/httpbin | grep -i spire -n
+    8:                                "inject.istio.io/templates": "sidecar,spire",
+    32:                                "spiffe.io/spire-managed-identity": "true"
+
+
+
 
 
 
@@ -530,10 +589,79 @@ istioctl create-remote-secret \
 
 
 
+    clu1 [460]{~/istio-1.24.3}# kubectl exec deploy/curl -- curl -vsS http://httpbin.sample.svc.cluster.local:80/get
+    * Host httpbin.sample.svc.cluster.local:80 was resolved.
+    * IPv6: (none)
+    * IPv4: 10.106.33.172
+    *   Trying 10.106.33.172:80...
+    * Established connection to httpbin.sample.svc.cluster.local (10.106.33.172 port 80) from 192.168.0.218 port 55834
+    * using HTTP/1.x
+    > GET /get HTTP/1.1
+    > Host: httpbin.sample.svc.cluster.local
+    > User-Agent: curl/8.16.0
+    > Accept: */*
+    >
+    * Request completely sent off
+    {
+      "args": {},
+      "headers": {
+        "Accept": [
+          "*/*"
+        ],
+        "Host": [
+          "httpbin.sample.svc.cluster.local"
+        ],
+        "User-Agent": [
+          "curl/8.16.0"
+        ],
+        "X-Envoy-Attempt-Count": [
+          "1"
+        ],
+        "X-Forwarded-Client-Cert": [
+          "By=spiffe://example.org/ns/sample/sa/httpbin;Hash=e9f8de7bbbfd6017fbae402daab3fb17ef8f93c696ce840dd636d1919e80395a;Subject=\"O=SPIRE,C=US\";URI=spiffe://example.org/ns/default/sa/curl"
+        ],
+        "X-Forwarded-Proto": [
+          "http"
+        ],
+        "X-Request-Id": [
+          "f3a33d62-e2ab-49e2-9919-37ed948b35c6"
+        ]
+      },
+      "method": "GET",
+      "origin": "127.0.0.6:41943",
+      "url": "http://httpbin.sample.svc.cluster.local/get"
+    }
+    < HTTP/1.1 200 OK
+    < access-control-allow-credentials: true
+    < access-control-allow-origin: *
+    < content-type: application/json; charset=utf-8
+    < date: Mon, 22 Sep 2025 17:48:35 GMT
+    < content-length: 687
+    < x-envoy-upstream-service-time: 1
+    < server: envoy
+    <
+    { [687 bytes data]
+    * Connection #0 to host httpbin.sample.svc.cluster.local:80 left intact
 
 
 
 
+
+    # SPIFFE ID check
+    clu1 [441]{~/istio-1.24.3}# kubectl -n sample exec deploy/httpbin -c istio-proxy -- \
+      sh -lc 'curl -s http://127.0.0.1:15000/certs'  | grep -o 'spiffe://[^"]*'
+    spiffe://example.org
+    spiffe://example.org/ns/sample/sa/httpbin
+    spiffe://example.org
+    spiffe://example.org/ns/sample/sa/httpbin
+
+
+    clu1 [465]{~/istio-1.24.3}# kubectl -n sample exec deploy/httpbin -c istio-proxy -- \
+      curl -s http://127.0.0.1:15000/certs \
+    | jq -r '.certificates[].cert_chain[]?.subject_alt_names[]?.uri // empty'
+    spiffe://example.org/ns/sample/sa/httpbin
+    spiffe://example.org/ns/sample/sa/httpbin
+    ...
 
 
 
@@ -578,205 +706,266 @@ istioctl create-remote-secret \
     2025-09-16T15:54:31.859724Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
 
 
+    -- SPIRE에서 등록/발급 상태 확인
+
+    # 등록 엔트리 확인 (네임스페이스/SA 기준으로 필터)
+    clu1 [196]{~}# kubectl -n "$SIPRE_SERVER_NS" exec "$SIPRE_SERVER_POD" -- \
+      /opt/spire/bin/spire-server entry show -selector k8s:ns:sample -selector k8s:sa:default
+    Found 1 entry
+    Entry ID         : 28d1df1a-0eb4-40e4-9f80-f3ace5dace14
+    SPIFFE ID        : spiffe://example.org/ns/sample/sa/default
+    Parent ID        : spiffe://example.org/spire/agent/k8s_psat/example-cluster/f5028525-61da-4094-8751-fd967dba08bb
+    Revision         : 0
+    X509-SVID TTL    : default
+    JWT-SVID TTL     : default
+    Selector         : k8s:ns:sample
+    Selector         : k8s:sa:default
+
+
+    clu1 [416]{~/istio-1.24.3}# kubectl -n spire-server exec -it spire-server-0 -- \
+      /opt/spire/bin/spire-server entry show
+    Found 10 entries
+    Entry ID         : example-cluster.6934f996-fecb-4176-ab4a-0869fd151ba8
+    SPIFFE ID        : spiffe://example.org/ns/default/sa/curl
+    Parent ID        : spiffe://example.org/spire/agent/k8s_psat/example-cluster/f5028525-61da-4094-8751-fd967dba08bb
+    Revision         : 0
+    X509-SVID TTL    : default
+    JWT-SVID TTL     : default
+    Selector         : k8s:pod-uid:1ac81f3a-2cd1-4eb2-9d75-95df2373ee9f
+    Hint             : default
+
+    Entry ID         : example-cluster.c20af1da-d6e1-4ee6-ad5c-74b2af290afc
+    SPIFFE ID        : spiffe://example.org/ns/sample/sa/httpbin
+    Parent ID        : spiffe://example.org/spire/agent/k8s_psat/example-cluster/f5028525-61da-4094-8751-fd967dba08bb
+    Revision         : 0
+    X509-SVID TTL    : default
+    JWT-SVID TTL     : default
+    Selector         : k8s:pod-uid:815860d2-eda1-4180-9153-83d3dde59d75
+    Hint             : default
+
+
+    # 에이전트 join 상태
+    clu1 [417]{~/istio-1.24.3}# kubectl -n spire-server exec -it spire-server-0 -- \
+      /opt/spire/bin/spire-server agent list
+    Found 1 attested agent:
+
+    SPIFFE ID         : spiffe://example.org/spire/agent/k8s_psat/example-cluster/f5028525-61da-4094-8751-fd967dba08bb
+    Attestation type  : k8s_psat
+    Expiration time   : 2025-09-22 20:23:09 +0000 UTC
+    Serial number     : 337903750812236215569374399803695934754
+    Can re-attest     : true
+
+
+    # 번들(루트CA) 확인- 번들 루트가 Envoy가 들고 있는 체인의 루트와 동일한지 확인
+    clu1 [418]{~/istio-1.24.3}# kubectl -n spire-server exec -it spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem | head
+    -----BEGIN CERTIFICATE-----
+    MIIDvTCCAqWgAwIBAgIQKUUqnbg18YnyBx2AZwfZ8jANBgkqhkiG9w0BAQsFADBo
+    ...
+    IxzEB6lgFrCQCPg5t2j/aSOwP3JGWygbcyN4HykA4SuK8ugmJdtIBRu3/OFNKMUB
+
+
+
+
 
 < more log >
-clu1 [102]{~}# kubectl -n spire-server exec spire-server-0 -- \
-  /opt/spire/bin/spire-server entry show -spiffeID spiffe://example.org/ns/istio-system/sa/${SA}
-Found 1 entry
-Entry ID         : example-cluster.10977e14-8471-4468-baca-a947be4bbd6a
-SPIFFE ID        : spiffe://example.org/ns/istio-system/sa/istio-eastwestgateway-service-account
-Parent ID        : spiffe://example.org/spire/agent/k8s_psat/example-cluster/f5028525-61da-4094-8751-fd967dba08bb
-Revision         : 0
-X509-SVID TTL    : default
-JWT-SVID TTL     : default
-Selector         : k8s:ns:istio-system
-Selector         : k8s:pod-uid:4095c053-a1a0-45c6-9fee-55b3407174f4
-Selector         : k8s:sa:istio-eastwestgateway-service-account
+
+    clu1 [102]{~}# kubectl -n spire-server exec spire-server-0 -- \
+      /opt/spire/bin/spire-server entry show -spiffeID spiffe://example.org/ns/istio-system/sa/${SA}
+    Found 1 entry
+    Entry ID         : example-cluster.10977e14-8471-4468-baca-a947be4bbd6a
+    SPIFFE ID        : spiffe://example.org/ns/istio-system/sa/istio-eastwestgateway-service-account
+    Parent ID        : spiffe://example.org/spire/agent/k8s_psat/example-cluster/f5028525-61da-4094-8751-fd967dba08bb
+    Revision         : 0
+    X509-SVID TTL    : default
+    JWT-SVID TTL     : default
+    Selector         : k8s:ns:istio-system
+    Selector         : k8s:pod-uid:4095c053-a1a0-45c6-9fee-55b3407174f4
+    Selector         : k8s:sa:istio-eastwestgateway-service-account
 
 
-clu1 [103]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway
-RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
-default           Cert Chain     ACTIVE     true           e2297715af017f8c2a9ca0df0d2a3b68     2025-09-16T21:59:09Z     2025-09-16T17:58:59Z
-ROOTCA                           ACTIVE     false
+    clu1 [103]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway
+    RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
+    default           Cert Chain     ACTIVE     true           e2297715af017f8c2a9ca0df0d2a3b68     2025-09-16T21:59:09Z     2025-09-16T17:58:59Z
+    ROOTCA                           ACTIVE     false
 
 
-clu1 [104]{~}# kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --since=2m | grep -i sds || true
-2025-09-16T17:59:09.565629Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
+    clu1 [104]{~}# kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --since=2m | grep -i sds || true
+    2025-09-16T17:59:09.565629Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
 
 
 
-clu1 [135]{~}# kubectl --context=cluster1 create ns sample --dry-run=client -o yaml | kubectl apply -f -
-namespace/sample created
-clu1 [136]{~}# kubectl --context=cluster1 label ns sample istio-injection=enabled --overwrite
-namespace/sample labeled
-clu1 [137]{~}#
-clu1 [137]{~}#
-clu1 [137]{~}# kubectl --context=cluster1 apply -n sample -f - <<EOF
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: httpbin
-    spec:
-      replicas: 1
-      selector:
-        matchLabels:
-          app: httpbin
-      template:
+    clu1 [135]{~}# kubectl --context=cluster1 create ns sample --dry-run=client -o yaml | kubectl apply -f -
+    namespace/sample created
+    clu1 [136]{~}# kubectl --context=cluster1 label ns sample istio-injection=enabled --overwrite
+    namespace/sample labeled
+    clu1 [137]{~}#
+    clu1 [137]{~}#
+    clu1 [137]{~}# kubectl --context=cluster1 apply -n sample -f - <<EOF
+        apiVersion: apps/v1
+        kind: Deployment
         metadata:
-          labels:
-            app: httpbin
+          name: httpbin
         spec:
-          containers:
-          - name: httpbin
-            image: mccutchen/go-httpbin:v2.10.0
-            ports:
-            - containerPort: 8080
-    ---
-    apiVersion: v1
-    kind: Service
-    metadata:
-      name: httpbin
-    spec:
-      selector:
-        app: httpbin
-      ports:
-      - port: 80
-        targetPort: 8080
-        name: http
-    EOF
+          replicas: 1
+          selector:
+            matchLabels:
+              app: httpbin
+          template:
+            metadata:
+              labels:
+                app: httpbin
+            spec:
+              containers:
+              - name: httpbin
+                image: mccutchen/go-httpbin:v2.10.0
+                ports:
+                - containerPort: 8080
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: httpbin
+        spec:
+          selector:
+            app: httpbin
+          ports:
+          - port: 80
+            targetPort: 8080
+            name: http
+        EOF
 
 
 
 
-clu1 [147]{~}# k exec -n sample --context=cluster2  -it deploy/curl  -- curl -v --resolve httpbin.sample.svc.cluster.local:80:192.168.10.152  http://httpbin.sample.svc.cluster.local/get
-* Added httpbin.sample.svc.cluster.local:80:192.168.10.152 to DNS cache
-* Hostname httpbin.sample.svc.cluster.local was found in DNS cache
-*   Trying 192.168.10.152:80...
-* Connected to httpbin.sample.svc.cluster.local (192.168.10.152) port 80
-* using HTTP/1.x
-> GET /get HTTP/1.1
-> Host: httpbin.sample.svc.cluster.local
-> User-Agent: curl/8.13.0
-> Accept: */*
->
-* Request completely sent off
+    clu1 [147]{~}# k exec -n sample --context=cluster2  -it deploy/curl  -- curl -v --resolve httpbin.sample.svc.cluster.local:80:192.168.10.152  http://httpbin.sample.svc.cluster.local/get
+    * Added httpbin.sample.svc.cluster.local:80:192.168.10.152 to DNS cache
+    * Hostname httpbin.sample.svc.cluster.local was found in DNS cache
+    *   Trying 192.168.10.152:80...
+    * Connected to httpbin.sample.svc.cluster.local (192.168.10.152) port 80
+    * using HTTP/1.x
+    > GET /get HTTP/1.1
+    > Host: httpbin.sample.svc.cluster.local
+    > User-Agent: curl/8.13.0
+    > Accept: */*
+    >
+    * Request completely sent off
 
 
 
 
 
 
-clu1 [103]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway
-RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
-default           Cert Chain     ACTIVE     true           e2297715af017f8c2a9ca0df0d2a3b68     2025-09-16T21:59:09Z     2025-09-16T17:58:59Z
-ROOTCA                           ACTIVE     false
-clu1 [104]{~}#
-clu1 [104]{~}# kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --since=2m | grep -i sds || true
-2025-09-16T17:59:09.565629Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
-clu1 [105]{~}#
-clu1 [105]{~}#
-clu1 [105]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway -o json | jq .
-{
-  "dynamicActiveSecrets": [
+    clu1 [103]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway
+    RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
+    default           Cert Chain     ACTIVE     true           e2297715af017f8c2a9ca0df0d2a3b68     2025-09-16T21:59:09Z     2025-09-16T17:58:59Z
+    ROOTCA                           ACTIVE     false
+    clu1 [104]{~}#
+    clu1 [104]{~}# kubectl -n istio-system logs deploy/istio-eastwestgateway -c istio-proxy --since=2m | grep -i sds || true
+    2025-09-16T17:59:09.565629Z     info    Existing workload SDS socket found at var/run/secrets/workload-spiffe-uds/socket. Default Istio SDS Server won't be started
+    clu1 [105]{~}#
+    clu1 [105]{~}#
+    clu1 [105]{~}# istioctl -n istio-system proxy-config secret deploy/istio-eastwestgateway -o json | jq .
     {
-      "name": "default",
-      "versionInfo": "1",
-      "lastUpdated": "2025-09-16T17:59:10.297Z",
-      "secret": {
-        "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
-        "name": "default",
-        "tlsCertificate": {
-          "certificateChain": {
-            "inlineBytes": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJVENDQWdtZ0F3SUJBZ0lSQU9JcGR4V3ZBWCtNS3B5ZzN3MHFPMmd3RFFZSktvWklodmNOQVFFTEJRQXcKYVRFTk1Bc0dBMVVFQmhNRVFWSlFRVEVRTUE0R0ExVUVDaE1IUlhoaGJYQnNaVEVVTUJJR0ExVUVBeE1MWlhoaApiWEJzWlM1dmNtY3hNREF1QmdOVkJBVVRKekl6TVRNeE1qTXhOVEUwTWpFMU1qTXhPVGcxTlRVNE16WXpNRFEwCk16RTFNelU0TnpneU5qQWVGdzB5TlRBNU1UWXhOelU0TlRsYUZ3MHlOVEE1TVRZeU1UVTVNRGxhTUIweEN6QUoKQmdOVkJBWVRBbFZUTVE0d0RBWURWUVFLRXdWVFVFbFNSVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSApBMElBQkVRT2laZitKcnczUmI2MkpnaHV1OFMxOGQ3MU0rbDEvNk9TUUJhZzZMTlJ1VXRxZk80SHV4KzRTQy83CkNZS1I4akVtSm1WSzB4WVQ0UXFJaVU5TVNuZWpnZG93Z2Rjd0RnWURWUjBQQVFIL0JBUURBZ09vTUIwR0ExVWQKSlFRV01CUUdDQ3NHQVFVRkJ3TUJCZ2dyQmdFRkJRY0RBakFNQmdOVkhSTUJBZjhFQWpBQU1CMEdBMVVkRGdRVwpCQlJub2JlOWtLN09sQW9vdHkwOUZncEtRcVdEdlRBZkJnTlZIU01FR0RBV2dCUjF5RFIwSEtIaFp1TllxYm9ICjZCQ212dW1QSHpCWUJnTlZIUkVFVVRCUGhrMXpjR2xtWm1VNkx5OWxlR0Z0Y0d4bExtOXlaeTl1Y3k5cGMzUnAKYnkxemVYTjBaVzB2YzJFdmFYTjBhVzh0WldGemRIZGxjM1JuWVhSbGQyRjVMWE5sY25acFkyVXRZV05qYjNWdQpkREFOQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBV1FWYndiNEE4YWovN0VseUM0d3p5RnpDb3ZTMVdlamp5b1oyCldKeUkyc0Zmb2I1Ui9UdStmeC9XUFEzY0xLcS81aHdVa1VKMTFpa3dKZnNEZUdvOWFZMGw3YXFFUWozRkgvTTcKd21vamJkYTZ5b3FzRGFTOE9pcGVCN256YmFRcUNvNWJwZURrb3NVd25keCtxNk9iK1BFc1RLVmxWUm1oM21HNgpQendZZ2QrK0lIZlh0ckg0c2QzSUhhaTFybG5uVW9LVkFDZGV4UVRrciszZWpkcWZSYng3SDlFcUk2cExTa2pUCnJpMWJpcllRb2dtS0hacFE5UHpLLy9qWmwvV0Jtb3pKVEREYVVzNzl5OVZLY2hkZ0V3ckNxTGJrQURSRVlpVnMKUmlyM2NEeVpyVzR1QmFscjNVKzRoN3F5bzFsd0FJQ0hObGNDaGRTYmtWUHFDbDBscWc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
-          },
-          "privateKey": {
-            "inlineBytes": "W3JlZGFjdGVkXQ=="
+      "dynamicActiveSecrets": [
+        {
+          "name": "default",
+          "versionInfo": "1",
+          "lastUpdated": "2025-09-16T17:59:10.297Z",
+          "secret": {
+            "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
+            "name": "default",
+            "tlsCertificate": {
+              "certificateChain": {
+                "inlineBytes": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJVENDQWdtZ0F3SUJBZ0lSQU9JcGR4V3ZBWCtNS3B5ZzN3MHFPMmd3RFFZSktvWklodmNOQVFFTEJRQXcKYVRFTk1Bc0dBMVVFQmhNRVFWSlFRVEVRTUE0R0ExVUVDaE1IUlhoaGJYQnNaVEVVTUJJR0ExVUVBeE1MWlhoaApiWEJzWlM1dmNtY3hNREF1QmdOVkJBVVRKekl6TVRNeE1qTXhOVEUwTWpFMU1qTXhPVGcxTlRVNE16WXpNRFEwCk16RTFNelU0TnpneU5qQWVGdzB5TlRBNU1UWXhOelU0TlRsYUZ3MHlOVEE1TVRZeU1UVTVNRGxhTUIweEN6QUoKQmdOVkJBWVRBbFZUTVE0d0RBWURWUVFLRXdWVFVFbFNSVEJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSApBMElBQkVRT2laZitKcnczUmI2MkpnaHV1OFMxOGQ3MU0rbDEvNk9TUUJhZzZMTlJ1VXRxZk80SHV4KzRTQy83CkNZS1I4akVtSm1WSzB4WVQ0UXFJaVU5TVNuZWpnZG93Z2Rjd0RnWURWUjBQQVFIL0JBUURBZ09vTUIwR0ExVWQKSlFRV01CUUdDQ3NHQVFVRkJ3TUJCZ2dyQmdFRkJRY0RBakFNQmdOVkhSTUJBZjhFQWpBQU1CMEdBMVVkRGdRVwpCQlJub2JlOWtLN09sQW9vdHkwOUZncEtRcVdEdlRBZkJnTlZIU01FR0RBV2dCUjF5RFIwSEtIaFp1TllxYm9ICjZCQ212dW1QSHpCWUJnTlZIUkVFVVRCUGhrMXpjR2xtWm1VNkx5OWxlR0Z0Y0d4bExtOXlaeTl1Y3k5cGMzUnAKYnkxemVYTjBaVzB2YzJFdmFYTjBhVzh0WldGemRIZGxjM1JuWVhSbGQyRjVMWE5sY25acFkyVXRZV05qYjNWdQpkREFOQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBV1FWYndiNEE4YWovN0VseUM0d3p5RnpDb3ZTMVdlamp5b1oyCldKeUkyc0Zmb2I1Ui9UdStmeC9XUFEzY0xLcS81aHdVa1VKMTFpa3dKZnNEZUdvOWFZMGw3YXFFUWozRkgvTTcKd21vamJkYTZ5b3FzRGFTOE9pcGVCN256YmFRcUNvNWJwZURrb3NVd25keCtxNk9iK1BFc1RLVmxWUm1oM21HNgpQendZZ2QrK0lIZlh0ckg0c2QzSUhhaTFybG5uVW9LVkFDZGV4UVRrciszZWpkcWZSYng3SDlFcUk2cExTa2pUCnJpMWJpcllRb2dtS0hacFE5UHpLLy9qWmwvV0Jtb3pKVEREYVVzNzl5OVZLY2hkZ0V3ckNxTGJrQURSRVlpVnMKUmlyM2NEeVpyVzR1QmFscjNVKzRoN3F5bzFsd0FJQ0hObGNDaGRTYmtWUHFDbDBscWc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
+              },
+              "privateKey": {
+                "inlineBytes": "W3JlZGFjdGVkXQ=="
+              }
+            }
           }
-        }
-      }
-    },
-    {
-      "name": "ROOTCA",
-      "versionInfo": "1",
-      "lastUpdated": "2025-09-16T17:59:10.286Z",
-      "secret": {
-        "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
-        "name": "ROOTCA",
-        "validationContext": {
-          "trustedCa": {},
-          "customValidatorConfig": {
-            "name": "envoy.tls.cert_validator.spiffe",
-            "typedConfig": {
-              "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.SPIFFECertValidatorConfig",
-              "trustDomains": [
-                {
-                  "name": "example.org",
-                  "trustBundle": {
-                    "inlineBytes": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUR3RENDQXFpZ0F3SUJBZ0lSQUs0RklhVDlLSWpsTnlBK0hUeWgvbkl3RFFZSktvWklodmNOQVFFTEJRQXcKYVRFTk1Bc0dBMVVFQmhNRVFWSlFRVEVRTUE0R0ExVUVDaE1IUlhoaGJYQnNaVEVVTUJJR0ExVUVBeE1MWlhoaApiWEJzWlM1dmNtY3hNREF1QmdOVkJBVVRKekl6TVRNeE1qTXhOVEUwTWpFMU1qTXhPVGcxTlRVNE16WXpNRFEwCk16RTFNelU0TnpneU5qQWVGdzB5TlRBNU1UWXdNakl5TlRKYUZ3MHlOVEE1TVRjd01qSXpNREphTUdreERUQUwKQmdOVkJBWVRCRUZTVUVFeEVEQU9CZ05WQkFvVEIwVjRZVzF3YkdVeEZEQVNCZ05WQkFNVEMyVjRZVzF3YkdVdQpiM0puTVRBd0xnWURWUVFGRXljeU16RXpNVEl6TVRVeE5ESXhOVEl6TVRrNE5UVTFPRE0yTXpBME5ETXhOVE0xCk9EYzRNall3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRRHlZUEQreTJSMTREc1QKbGUzRDYxeG9PQkQ3ZUpNQXdqOWJmZ1FWSmRUT0FJdjFzWStjdkZvbUlycjUxUnBuZnVGN3g1emtuMEZVY3I2ZgpFS0c5T3ZJd2w3UUIxTlNPZGlkU3BDQ1J3QjZDcU9VQnZrMlRuOWxIeE1ZUnF2TEJQdytTaXZvTmptK1hYQkdYCkUwT2g4R25rMG1mdm9PV2gwbWxLUkRqVGNKUytCTTVKaWR2dlF6SEhCM1lVUzJXRlNOYzNIbXFlUTI3KzZIRUoKS3hoV1I5OUwrRTkxYXdITXZhU2YxWlo1SVBCZE5ZOTdpRW4vRmphaXk2dmh2Znd1WUtRSllVSHZtRTUvV0xZYgpvc3hMZVVBV1dXaDMzcmxDbVFlUFp1NXNlZUx2bTRqc3FmQjd6TmlkZnIrcDRQODU2dzdTdm1QQzZwTXVOUUtaCmFzLzF4NmI1QWdNQkFBR2pZekJoTUE0R0ExVWREd0VCL3dRRUF3SUJCakFQQmdOVkhSTUJBZjhFQlRBREFRSC8KTUIwR0ExVWREZ1FXQkJSMXlEUjBIS0hoWnVOWXFib0g2QkNtdnVtUEh6QWZCZ05WSFJFRUdEQVdoaFJ6Y0dsbQpabVU2THk5bGVHRnRjR3hsTG05eVp6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUEwSHJ3V2RMbERrTnFhd2lnClozUzBVSitKMlFNVXNVOFVPK1lEV1ZEb0Y1SENmRDFCcmZjeEJKQ2RMNUJtNXRiSTBrT1F3Q2Z0SWVPemVWcXoKcmFmT2F2R2QyWXlYYlFmNnJzVzdSWGxYL1ZOK1BCWG1lYmVrdnYvTUwwMmRKbkpUVHRWd1ZlRXBDUE5sTzJSdApTb0dmSmxuZWRIQ3VxaVhwalB5VVNjMmh1Q1EyeUU0VDc5bnNaL3lWc2tiMmxWWkVIbEZrRnBjWHV6SFVwcDkwCm5hdlcyT1VjOEh1WU00WXUzYUw5QXhmKzFJdHRCdVM2cUs5YldtWWsxRnVBUzlBZVQrNTc5L2VYMVNvdlI1MlYKUFNkTXpZTGFPRVFTY0FWLzZzV2d2c0UrQllWYTdlK241d0JoUkhrZjFmUE1sSlVtYjRRWmM5K2lia0M0ZnJBZQozNFBpQWc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlEdnpDQ0FxZWdBd0lCQWdJUVUxKzJwV2FMQ3FHL0NNZjVTYk9QbHpBTkJna3Foa2lHOXcwQkFRc0ZBREJwCk1RMHdDd1lEVlFRR0V3UkJVbEJCTVJBd0RnWURWUVFLRXdkRmVHRnRjR3hsTVJRd0VnWURWUVFERXd0bGVHRnQKY0d4bExtOXlaekV3TUM0R0ExVUVCUk1uTVRFd09ESXlPRGsyTXpVME5qTTVNRFkzTkRNeE5ERTRPVGN4TmpVeQpORGczTXpVeU1qRTFNQjRYRFRJMU1Ea3hOakUwTWpNd01Wb1hEVEkxTURreE56RTBNak14TVZvd2FURU5NQXNHCkExVUVCaE1FUVZKUVFURVFNQTRHQTFVRUNoTUhSWGhoYlhCc1pURVVNQklHQTFVRUF4TUxaWGhoYlhCc1pTNXYKY21jeE1EQXVCZ05WQkFVVEp6RXhNRGd5TWpnNU5qTTFORFl6T1RBMk56UXpNVFF4T0RrM01UWTFNalE0TnpNMQpNakl4TlRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBUEdaanBBOFRCTzVNTGk4Ckl6cVFEWWEwNkRraDBjQWNNZ29TeDllY2VHc2NpcVVsV2N4WlNBYXlnZXdtSDhoRWlFMHdZd2k5SFZ4eVdWQjQKaEQxUHlQdW40UVp4WjUvNS9MNEM0b09vcVZ2SEpvb0lKZmZZZzlSSThOTlNwYUdxU0xZWkt6MnBzVWZlVFJ1Wgp6MnMrL0pTRmhLNGFwS1RXZ2IyaSs4eExoUHk3Y2U0RjF3MnI4MkRVMTJCR3VVMDVoaFdaVnFnQ05TSmtrMDdCCnIvaTVFY01LRmZuTFZNSWM3MUlmTlVaM2l2aktZOFJ4dTRkZjk0Vytvd1F2Q1ZDZldPNnNtM29PRng1c08rdkUKdTRPV0VNUVpZeGpveDBZV0wxQ0pNdSs1R2Rmblc2czROT3hyY2ZFZlh1SUZ1WDU3VzkyZ29rMmRnMlpUNmc2TgoyQkpHdTFjQ0F3RUFBYU5qTUdFd0RnWURWUjBQQVFIL0JBUURBZ0VHTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3CkhRWURWUjBPQkJZRUZMdEN6MVplUDc0eXo2cG5UUFZlcDVWL3BQVFFNQjhHQTFVZEVRUVlNQmFHRkhOd2FXWm0KWlRvdkwyVjRZVzF3YkdVdWIzSm5NQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUNQZUJNb25EajFZTzVqODJpNQpseUlZN3V6cUdCQ0N5MUdOUkRTVnFNdzRCL0h1aGpZWVBaRTZReWx2RU9tTWdzSTdqK1hGT25GTCtqMnRkZFdBCmhPRFRDdU5NeVN6MFpvZWRVNmhrS1ZDcE1zWm9pSEZxbEFJQ1NhUGhzWURNYWo1eVFwaHVCQms1Q25PRXZOVzUKSVVHVVY0UldhbmxOQVpEalRQRGhKdnRMWDJTa2JkZVVQbGhLR0I1QWFydmZ3UEpRYWxNT2pEMFhML1ZMcmJlLwphZlBta2N4d1R2UHM1UmY3TVdEOGRrdEgxSXQ4djhHdUpIQkoyRUIxRTJSUVBPbFNJMzFIYlU3ZHUxaGFPQzdYCmE3WnUxalI5aGlrT3lTZE1MWnJDa1M0WXNYSUNxRFVFcWJQTGZZWFM2K3RHTGJUR3NkbTNiWjBXVWI3K3l1N2wKb3NXNgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
-                  }
+        },
+        {
+          "name": "ROOTCA",
+          "versionInfo": "1",
+          "lastUpdated": "2025-09-16T17:59:10.286Z",
+          "secret": {
+            "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret",
+            "name": "ROOTCA",
+            "validationContext": {
+              "trustedCa": {},
+              "customValidatorConfig": {
+                "name": "envoy.tls.cert_validator.spiffe",
+                "typedConfig": {
+                  "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.SPIFFECertValidatorConfig",
+                  "trustDomains": [
+                    {
+                      "name": "example.org",
+                      "trustBundle": {
+                        "inlineBytes": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUR3RENDQXFpZ0F3SUJBZ0lSQUs0RklhVDlLSWpsTnlBK0hUeWgvbkl3RFFZSktvWklodmNOQVFFTEJRQXcKYVRFTk1Bc0dBMVVFQmhNRVFWSlFRVEVRTUE0R0ExVUVDaE1IUlhoaGJYQnNaVEVVTUJJR0ExVUVBeE1MWlhoaApiWEJzWlM1dmNtY3hNREF1QmdOVkJBVVRKekl6TVRNeE1qTXhOVEUwTWpFMU1qTXhPVGcxTlRVNE16WXpNRFEwCk16RTFNelU0TnpneU5qQWVGdzB5TlRBNU1UWXdNakl5TlRKYUZ3MHlOVEE1TVRjd01qSXpNREphTUdreERUQUwKQmdOVkJBWVRCRUZTVUVFeEVEQU9CZ05WQkFvVEIwVjRZVzF3YkdVeEZEQVNCZ05WQkFNVEMyVjRZVzF3YkdVdQpiM0puTVRBd0xnWURWUVFGRXljeU16RXpNVEl6TVRVeE5ESXhOVEl6TVRrNE5UVTFPRE0yTXpBME5ETXhOVE0xCk9EYzRNall3Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRRHlZUEQreTJSMTREc1QKbGUzRDYxeG9PQkQ3ZUpNQXdqOWJmZ1FWSmRUT0FJdjFzWStjdkZvbUlycjUxUnBuZnVGN3g1emtuMEZVY3I2ZgpFS0c5T3ZJd2w3UUIxTlNPZGlkU3BDQ1J3QjZDcU9VQnZrMlRuOWxIeE1ZUnF2TEJQdytTaXZvTmptK1hYQkdYCkUwT2g4R25rMG1mdm9PV2gwbWxLUkRqVGNKUytCTTVKaWR2dlF6SEhCM1lVUzJXRlNOYzNIbXFlUTI3KzZIRUoKS3hoV1I5OUwrRTkxYXdITXZhU2YxWlo1SVBCZE5ZOTdpRW4vRmphaXk2dmh2Znd1WUtRSllVSHZtRTUvV0xZYgpvc3hMZVVBV1dXaDMzcmxDbVFlUFp1NXNlZUx2bTRqc3FmQjd6TmlkZnIrcDRQODU2dzdTdm1QQzZwTXVOUUtaCmFzLzF4NmI1QWdNQkFBR2pZekJoTUE0R0ExVWREd0VCL3dRRUF3SUJCakFQQmdOVkhSTUJBZjhFQlRBREFRSC8KTUIwR0ExVWREZ1FXQkJSMXlEUjBIS0hoWnVOWXFib0g2QkNtdnVtUEh6QWZCZ05WSFJFRUdEQVdoaFJ6Y0dsbQpabVU2THk5bGVHRnRjR3hsTG05eVp6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUEwSHJ3V2RMbERrTnFhd2lnClozUzBVSitKMlFNVXNVOFVPK1lEV1ZEb0Y1SENmRDFCcmZjeEJKQ2RMNUJtNXRiSTBrT1F3Q2Z0SWVPemVWcXoKcmFmT2F2R2QyWXlYYlFmNnJzVzdSWGxYL1ZOK1BCWG1lYmVrdnYvTUwwMmRKbkpUVHRWd1ZlRXBDUE5sTzJSdApTb0dmSmxuZWRIQ3VxaVhwalB5VVNjMmh1Q1EyeUU0VDc5bnNaL3lWc2tiMmxWWkVIbEZrRnBjWHV6SFVwcDkwCm5hdlcyT1VjOEh1WU00WXUzYUw5QXhmKzFJdHRCdVM2cUs5YldtWWsxRnVBUzlBZVQrNTc5L2VYMVNvdlI1MlYKUFNkTXpZTGFPRVFTY0FWLzZzV2d2c0UrQllWYTdlK241d0JoUkhrZjFmUE1sSlVtYjRRWmM5K2lia0M0ZnJBZQozNFBpQWc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlEdnpDQ0FxZWdBd0lCQWdJUVUxKzJwV2FMQ3FHL0NNZjVTYk9QbHpBTkJna3Foa2lHOXcwQkFRc0ZBREJwCk1RMHdDd1lEVlFRR0V3UkJVbEJCTVJBd0RnWURWUVFLRXdkRmVHRnRjR3hsTVJRd0VnWURWUVFERXd0bGVHRnQKY0d4bExtOXlaekV3TUM0R0ExVUVCUk1uTVRFd09ESXlPRGsyTXpVME5qTTVNRFkzTkRNeE5ERTRPVGN4TmpVeQpORGczTXpVeU1qRTFNQjRYRFRJMU1Ea3hOakUwTWpNd01Wb1hEVEkxTURreE56RTBNak14TVZvd2FURU5NQXNHCkExVUVCaE1FUVZKUVFURVFNQTRHQTFVRUNoTUhSWGhoYlhCc1pURVVNQklHQTFVRUF4TUxaWGhoYlhCc1pTNXYKY21jeE1EQXVCZ05WQkFVVEp6RXhNRGd5TWpnNU5qTTFORFl6T1RBMk56UXpNVFF4T0RrM01UWTFNalE0TnpNMQpNakl4TlRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBUEdaanBBOFRCTzVNTGk4Ckl6cVFEWWEwNkRraDBjQWNNZ29TeDllY2VHc2NpcVVsV2N4WlNBYXlnZXdtSDhoRWlFMHdZd2k5SFZ4eVdWQjQKaEQxUHlQdW40UVp4WjUvNS9MNEM0b09vcVZ2SEpvb0lKZmZZZzlSSThOTlNwYUdxU0xZWkt6MnBzVWZlVFJ1Wgp6MnMrL0pTRmhLNGFwS1RXZ2IyaSs4eExoUHk3Y2U0RjF3MnI4MkRVMTJCR3VVMDVoaFdaVnFnQ05TSmtrMDdCCnIvaTVFY01LRmZuTFZNSWM3MUlmTlVaM2l2aktZOFJ4dTRkZjk0Vytvd1F2Q1ZDZldPNnNtM29PRng1c08rdkUKdTRPV0VNUVpZeGpveDBZV0wxQ0pNdSs1R2Rmblc2czROT3hyY2ZFZlh1SUZ1WDU3VzkyZ29rMmRnMlpUNmc2TgoyQkpHdTFjQ0F3RUFBYU5qTUdFd0RnWURWUjBQQVFIL0JBUURBZ0VHTUE4R0ExVWRFd0VCL3dRRk1BTUJBZjh3CkhRWURWUjBPQkJZRUZMdEN6MVplUDc0eXo2cG5UUFZlcDVWL3BQVFFNQjhHQTFVZEVRUVlNQmFHRkhOd2FXWm0KWlRvdkwyVjRZVzF3YkdVdWIzSm5NQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUNQZUJNb25EajFZTzVqODJpNQpseUlZN3V6cUdCQ0N5MUdOUkRTVnFNdzRCL0h1aGpZWVBaRTZReWx2RU9tTWdzSTdqK1hGT25GTCtqMnRkZFdBCmhPRFRDdU5NeVN6MFpvZWRVNmhrS1ZDcE1zWm9pSEZxbEFJQ1NhUGhzWURNYWo1eVFwaHVCQms1Q25PRXZOVzUKSVVHVVY0UldhbmxOQVpEalRQRGhKdnRMWDJTa2JkZVVQbGhLR0I1QWFydmZ3UEpRYWxNT2pEMFhML1ZMcmJlLwphZlBta2N4d1R2UHM1UmY3TVdEOGRrdEgxSXQ4djhHdUpIQkoyRUIxRTJSUVBPbFNJMzFIYlU3ZHUxaGFPQzdYCmE3WnUxalI5aGlrT3lTZE1MWnJDa1M0WXNYSUNxRFVFcWJQTGZZWFM2K3RHTGJUR3NkbTNiWjBXVWI3K3l1N2wKb3NXNgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
+                      }
+                    }
+                  ]
                 }
-              ]
+              }
             }
           }
         }
-      }
+      ]
     }
-  ]
-}
-clu1 [106]{~}# istioctl -n istio-system pc clusters deploy/istio-eastwestgateway | grep -i sds
-sds-grpc                                                                -         -          -             STATIC
-clu1 [107]{~}#
-clu1 [107]{~}# istioctl -n istio-system pc listeners deploy/istio-eastwestgateway | grep -i spiffe
-clu1 [108]{~}#
-clu1 [108]{~}# kubectl -n spire exec -it spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem
-Error from server (NotFound): namespaces "spire" not found
-clu1 [109]{~}# kubectl -n spire-server exec -it spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem
------BEGIN CERTIFICATE-----
-MIIDwDCCAqigAwIBAgIRAK4FIaT9KIjlNyA+HTyh/nIwDQYJKoZIhvcNAQELBQAw
-aTENMAsGA1UEBhMEQVJQQTEQMA4GA1UEChMHRXhhbXBsZTEUMBIGA1UEAxMLZXhh
-bXBsZS5vcmcxMDAuBgNVBAUTJzIzMTMxMjMxNTE0MjE1MjMxOTg1NTU4MzYzMDQ0
-MzE1MzU4NzgyNjAeFw0yNTA5MTYwMjIyNTJaFw0yNTA5MTcwMjIzMDJaMGkxDTAL
-BgNVBAYTBEFSUEExEDAOBgNVBAoTB0V4YW1wbGUxFDASBgNVBAMTC2V4YW1wbGUu
-b3JnMTAwLgYDVQQFEycyMzEzMTIzMTUxNDIxNTIzMTk4NTU1ODM2MzA0NDMxNTM1
-ODc4MjYwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDyYPD+y2R14DsT
-le3D61xoOBD7eJMAwj9bfgQVJdTOAIv1sY+cvFomIrr51RpnfuF7x5zkn0FUcr6f
-EKG9OvIwl7QB1NSOdidSpCCRwB6CqOUBvk2Tn9lHxMYRqvLBPw+SivoNjm+XXBGX
-E0Oh8Gnk0mfvoOWh0mlKRDjTcJS+BM5JidvvQzHHB3YUS2WFSNc3HmqeQ27+6HEJ
-KxhWR99L+E91awHMvaSf1ZZ5IPBdNY97iEn/Fjaiy6vhvfwuYKQJYUHvmE5/WLYb
-osxLeUAWWWh33rlCmQePZu5seeLvm4jsqfB7zNidfr+p4P856w7SvmPC6pMuNQKZ
-as/1x6b5AgMBAAGjYzBhMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/
-MB0GA1UdDgQWBBR1yDR0HKHhZuNYqboH6BCmvumPHzAfBgNVHREEGDAWhhRzcGlm
-ZmU6Ly9leGFtcGxlLm9yZzANBgkqhkiG9w0BAQsFAAOCAQEA0HrwWdLlDkNqawig
-Z3S0UJ+J2QMUsU8UO+YDWVDoF5HCfD1BrfcxBJCdL5Bm5tbI0kOQwCftIeOzeVqz
-rafOavGd2YyXbQf6rsW7RXlX/VN+PBXmebekvv/ML02dJnJTTtVwVeEpCPNlO2Rt
-SoGfJlnedHCuqiXpjPyUSc2huCQ2yE4T79nsZ/yVskb2lVZEHlFkFpcXuzHUpp90
-navW2OUc8HuYM4Yu3aL9Axf+1IttBuS6qK9bWmYk1FuAS9AeT+579/eX1SovR52V
-PSdMzYLaOEQScAV/6sWgvsE+BYVa7e+n5wBhRHkf1fPMlJUmb4QZc9+ibkC4frAe
-34PiAg==
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIDvzCCAqegAwIBAgIQU1+2pWaLCqG/CMf5SbOPlzANBgkqhkiG9w0BAQsFADBp
-MQ0wCwYDVQQGEwRBUlBBMRAwDgYDVQQKEwdFeGFtcGxlMRQwEgYDVQQDEwtleGFt
-cGxlLm9yZzEwMC4GA1UEBRMnMTEwODIyODk2MzU0NjM5MDY3NDMxNDE4OTcxNjUy
-NDg3MzUyMjE1MB4XDTI1MDkxNjE0MjMwMVoXDTI1MDkxNzE0MjMxMVowaTENMAsG
-A1UEBhMEQVJQQTEQMA4GA1UEChMHRXhhbXBsZTEUMBIGA1UEAxMLZXhhbXBsZS5v
-cmcxMDAuBgNVBAUTJzExMDgyMjg5NjM1NDYzOTA2NzQzMTQxODk3MTY1MjQ4NzM1
-MjIxNTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAPGZjpA8TBO5MLi8
-IzqQDYa06Dkh0cAcMgoSx9eceGsciqUlWcxZSAaygewmH8hEiE0wYwi9HVxyWVB4
-hD1PyPun4QZxZ5/5/L4C4oOoqVvHJooIJffYg9RI8NNSpaGqSLYZKz2psUfeTRuZ
-z2s+/JSFhK4apKTWgb2i+8xLhPy7ce4F1w2r82DU12BGuU05hhWZVqgCNSJkk07B
-r/i5EcMKFfnLVMIc71IfNUZ3ivjKY8Rxu4df94W+owQvCVCfWO6sm3oOFx5sO+vE
-u4OWEMQZYxjox0YWL1CJMu+5GdfnW6s4NOxrcfEfXuIFuX57W92gok2dg2ZT6g6N
-2BJGu1cCAwEAAaNjMGEwDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8w
-HQYDVR0OBBYEFLtCz1ZeP74yz6pnTPVep5V/pPTQMB8GA1UdEQQYMBaGFHNwaWZm
-ZTovL2V4YW1wbGUub3JnMA0GCSqGSIb3DQEBCwUAA4IBAQCPeBMonDj1YO5j82i5
-lyIY7uzqGBCCy1GNRDSVqMw4B/HuhjYYPZE6QylvEOmMgsI7j+XFOnFL+j2tddWA
-hODTCuNMySz0ZoedU6hkKVCpMsZoiHFqlAICSaPhsYDMaj5yQphuBBk5CnOEvNW5
-IUGUV4RWanlNAZDjTPDhJvtLX2SkbdeUPlhKGB5AarvfwPJQalMOjD0XL/VLrbe/
-afPmkcxwTvPs5Rf7MWD8dktH1It8v8GuJHBJ2EB1E2RQPOlSI31HbU7du1haOC7X
-a7Zu1jR9hikOySdMLZrCkS4YsXICqDUEqbPLfYXS6+tGLbTGsdm3bZ0WUb7+yu7l
-osW6
------END CERTIFICATE-----
+    clu1 [106]{~}# istioctl -n istio-system pc clusters deploy/istio-eastwestgateway | grep -i sds
+    sds-grpc                                                                -         -          -             STATIC
+    clu1 [107]{~}#
+    clu1 [107]{~}# istioctl -n istio-system pc listeners deploy/istio-eastwestgateway | grep -i spiffe
+    clu1 [108]{~}#
+    clu1 [108]{~}# kubectl -n spire exec -it spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem
+    Error from server (NotFound): namespaces "spire" not found
+    clu1 [109]{~}# kubectl -n spire-server exec -it spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem
+    -----BEGIN CERTIFICATE-----
+    MIIDwDCCAqigAwIBAgIRAK4FIaT9KIjlNyA+HTyh/nIwDQYJKoZIhvcNAQELBQAw
+    aTENMAsGA1UEBhMEQVJQQTEQMA4GA1UEChMHRXhhbXBsZTEUMBIGA1UEAxMLZXhh
+    bXBsZS5vcmcxMDAuBgNVBAUTJzIzMTMxMjMxNTE0MjE1MjMxOTg1NTU4MzYzMDQ0
+    MzE1MzU4NzgyNjAeFw0yNTA5MTYwMjIyNTJaFw0yNTA5MTcwMjIzMDJaMGkxDTAL
+    BgNVBAYTBEFSUEExEDAOBgNVBAoTB0V4YW1wbGUxFDASBgNVBAMTC2V4YW1wbGUu
+    b3JnMTAwLgYDVQQFEycyMzEzMTIzMTUxNDIxNTIzMTk4NTU1ODM2MzA0NDMxNTM1
+    ODc4MjYwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDyYPD+y2R14DsT
+    le3D61xoOBD7eJMAwj9bfgQVJdTOAIv1sY+cvFomIrr51RpnfuF7x5zkn0FUcr6f
+    EKG9OvIwl7QB1NSOdidSpCCRwB6CqOUBvk2Tn9lHxMYRqvLBPw+SivoNjm+XXBGX
+    E0Oh8Gnk0mfvoOWh0mlKRDjTcJS+BM5JidvvQzHHB3YUS2WFSNc3HmqeQ27+6HEJ
+    KxhWR99L+E91awHMvaSf1ZZ5IPBdNY97iEn/Fjaiy6vhvfwuYKQJYUHvmE5/WLYb
+    osxLeUAWWWh33rlCmQePZu5seeLvm4jsqfB7zNidfr+p4P856w7SvmPC6pMuNQKZ
+    as/1x6b5AgMBAAGjYzBhMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/
+    MB0GA1UdDgQWBBR1yDR0HKHhZuNYqboH6BCmvumPHzAfBgNVHREEGDAWhhRzcGlm
+    ZmU6Ly9leGFtcGxlLm9yZzANBgkqhkiG9w0BAQsFAAOCAQEA0HrwWdLlDkNqawig
+    Z3S0UJ+J2QMUsU8UO+YDWVDoF5HCfD1BrfcxBJCdL5Bm5tbI0kOQwCftIeOzeVqz
+    rafOavGd2YyXbQf6rsW7RXlX/VN+PBXmebekvv/ML02dJnJTTtVwVeEpCPNlO2Rt
+    SoGfJlnedHCuqiXpjPyUSc2huCQ2yE4T79nsZ/yVskb2lVZEHlFkFpcXuzHUpp90
+    navW2OUc8HuYM4Yu3aL9Axf+1IttBuS6qK9bWmYk1FuAS9AeT+579/eX1SovR52V
+    PSdMzYLaOEQScAV/6sWgvsE+BYVa7e+n5wBhRHkf1fPMlJUmb4QZc9+ibkC4frAe
+    34PiAg==
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    MIIDvzCCAqegAwIBAgIQU1+2pWaLCqG/CMf5SbOPlzANBgkqhkiG9w0BAQsFADBp
+    MQ0wCwYDVQQGEwRBUlBBMRAwDgYDVQQKEwdFeGFtcGxlMRQwEgYDVQQDEwtleGFt
+    cGxlLm9yZzEwMC4GA1UEBRMnMTEwODIyODk2MzU0NjM5MDY3NDMxNDE4OTcxNjUy
+    NDg3MzUyMjE1MB4XDTI1MDkxNjE0MjMwMVoXDTI1MDkxNzE0MjMxMVowaTENMAsG
+    A1UEBhMEQVJQQTEQMA4GA1UEChMHRXhhbXBsZTEUMBIGA1UEAxMLZXhhbXBsZS5v
+    cmcxMDAuBgNVBAUTJzExMDgyMjg5NjM1NDYzOTA2NzQzMTQxODk3MTY1MjQ4NzM1
+    MjIxNTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAPGZjpA8TBO5MLi8
+    IzqQDYa06Dkh0cAcMgoSx9eceGsciqUlWcxZSAaygewmH8hEiE0wYwi9HVxyWVB4
+    hD1PyPun4QZxZ5/5/L4C4oOoqVvHJooIJffYg9RI8NNSpaGqSLYZKz2psUfeTRuZ
+    z2s+/JSFhK4apKTWgb2i+8xLhPy7ce4F1w2r82DU12BGuU05hhWZVqgCNSJkk07B
+    r/i5EcMKFfnLVMIc71IfNUZ3ivjKY8Rxu4df94W+owQvCVCfWO6sm3oOFx5sO+vE
+    u4OWEMQZYxjox0YWL1CJMu+5GdfnW6s4NOxrcfEfXuIFuX57W92gok2dg2ZT6g6N
+    2BJGu1cCAwEAAaNjMGEwDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8w
+    HQYDVR0OBBYEFLtCz1ZeP74yz6pnTPVep5V/pPTQMB8GA1UdEQQYMBaGFHNwaWZm
+    ZTovL2V4YW1wbGUub3JnMA0GCSqGSIb3DQEBCwUAA4IBAQCPeBMonDj1YO5j82i5
+    lyIY7uzqGBCCy1GNRDSVqMw4B/HuhjYYPZE6QylvEOmMgsI7j+XFOnFL+j2tddWA
+    hODTCuNMySz0ZoedU6hkKVCpMsZoiHFqlAICSaPhsYDMaj5yQphuBBk5CnOEvNW5
+    IUGUV4RWanlNAZDjTPDhJvtLX2SkbdeUPlhKGB5AarvfwPJQalMOjD0XL/VLrbe/
+    afPmkcxwTvPs5Rf7MWD8dktH1It8v8GuJHBJ2EB1E2RQPOlSI31HbU7du1haOC7X
+    a7Zu1jR9hikOySdMLZrCkS4YsXICqDUEqbPLfYXS6+tGLbTGsdm3bZ0WUb7+yu7l
+    osW6
+    -----END CERTIFICATE-----
 
 
 
