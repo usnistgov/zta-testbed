@@ -4,11 +4,6 @@ How to check whether spiffe id generated from SPIRE or Istio
 =============================================================
 
 
-
-
-
-
-
 clu2 [295]{~}# POD=$(kubectl -n sample get pod -l app=httpbin -o jsonpath='{.items[0].metadata.name}')
 clu2 [296]{~}# echo $POD
 httpbin-5c4cd67c58-cqkxq
@@ -155,4 +150,41 @@ clu2 [309]{~}# k exec deployments/curl -- curl -sS http://httpbin.sample.svc.clu
   "origin": "127.0.0.6:42077",
   "url": "http://httpbin.sample.svc.cluster.local/get"
 }
+
+
+
+===================
+SPIRE FEDERATION
+===================
+
+1. Root bundel checking
+------------------------
+
+
+  clu2 [337]{~}# kubectl --context=cluster1 -n spire-server exec spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem > /tmp/bundle-clu1.pem
+  clu2 [338]{~}# kubectl --context=cluster2 -n spire-server exec spire-server-0 -- /opt/spire/bin/spire-server bundle show -format pem > /tmp/bundle-clu2.pem
+
+
+  $ diff -wibup /tmp/bundle-clu1.pem /tmp/bundle-clu2.pem || true
+
+  # sha256sum /tmp/bundle-clu1.pem /tmp/bundle-clu2.pem
+  e9fc2e92222886f4b3f8b7d452792748941f2f9d74c6678fb5b751ea36fbff2b  /tmp/bundle-clu1.pem
+  4a69159cb62ad96c86f57749441340e6cee03d77f71a92c6e77b9a9b6a3bb8ae  /tmp/bundle-clu2.pem
+
+
+--> diff: all letters MUST be the same
+--> sha256sum: MUST be the same fingerprint
+	
+	Above result are different root bundle
+
+
+
+
+
+
+
+
+
+
+
 

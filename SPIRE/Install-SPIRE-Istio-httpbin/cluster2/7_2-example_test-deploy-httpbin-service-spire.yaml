@@ -1,4 +1,4 @@
-#  use the following command:
+#  When install, use the following command:
 # istioctl kube-inject --filename <file> | kubectl apply -f -
 apiVersion: v1
 kind: Namespace

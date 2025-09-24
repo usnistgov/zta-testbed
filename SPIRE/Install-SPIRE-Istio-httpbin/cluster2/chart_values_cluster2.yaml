@@ -1,0 +1,61 @@
+server:
+  namespace: spire-server
+  config:
+    server:
+      trust_domain: cluster2.example.org
+      bind_address: "0.0.0.0"
+      bind_port: 8081
+      data_dir: /run/spire/data
+      default_x509_svid_ttl: 4h
+      default_jwt_svid_ttl: 1h
+      log_level: info
+      ca_key_type: rsa-2048
+      bundle_endpoint:
+        enabled: true
+        address: 0.0.0.0
+        port: 8443
+        profile: https_spiffe
+    plugins:
+      DataStore:
+        sql:
+          plugin_data:
+            database_type: sqlite3
+            connection_string: /run/spire/data/datastore.sqlite3
+      KeyManager:
+        disk:
+          plugin_data:
+            keys_path: /run/spire/data/keys.json
+      NodeAttestor:
+        k8s_psat:
+          plugin_data:
+            clusters:
+              example-cluster:
+                service_account_allow_list:
+                  - "spire-server:spire-agent"
+      BundlePublisher:
+        k8s_configmap:
+          plugin_data:
+            clusters:
+              - chart-internal:
+                  configmap_name: "spire-bundle"
+                  configmap_key: "bundle.spiffe"
+                  format: "spiffe"
+                  namespace: "spire-server"
+  service:
+    type: LoadBalancer
+    ports:
+      - { name: api,    port: 8081, targetPort: 8081 }
+      - { name: bundle, port: 8443, targetPort: 8443 }
+
+agent:
+  enabled: true
+  namespace: spire-server
+  config:
+    agent:
+      trust_domain: cluster2.example.org
+      server_address: spire-server
+      server_port: 8081
+      socket_path: /run/spire/sockets/agent.sock
+  csiDriver:
+    enabled: true
+
