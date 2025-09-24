@@ -1,0 +1,61 @@
+#  use the following command:
+# istioctl kube-inject --filename <file> | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sample
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: httpbin
+  namespace: sample
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: sample
+  labels:
+    app: httpbin
+spec:
+  selector:
+    app: httpbin
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin
+  template:
+    metadata:
+      labels:
+        app: httpbin
+        spiffe.io/spire-managed-identity: "true"     # [중요] SPIRE 관리 ID 스위치
+      annotations:
+        inject.istio.io/templates: "sidecar,spire"   # [중요] SPIRE 템플릿 주입
+    spec:
+      serviceAccountName: httpbin
+      containers:
+      - name: httpbin
+        image: mccutchen/go-httpbin:v2.10.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          runAsUser: 1000
+      volumes:
+      - name: tmp
+        emptyDir: {}

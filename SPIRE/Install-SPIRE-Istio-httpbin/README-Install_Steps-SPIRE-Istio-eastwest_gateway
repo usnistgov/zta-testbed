@@ -102,9 +102,37 @@ Using install-istio.sh script, execute until 'Set the default network for cluste
 
 
 
+  # Configure cluster1 as a primary
+  echo "Installing istio in $CLUSTER1_NAME..."
+  istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}/cluster1-SPIRE-trustDomain.yaml --skip-confirmation
+
+  # Configure cluster2 as a primary
+  echo "Installing istio in $CLUSTER2_NAME..."
+  istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2-SPIRE-trustDomain.yaml --skip-confirmation
+
+
+
 
 4. Auto-registration using the SPIRE Controller Manager 
 -------------------------------------------------------
+
+< clusterspiffeid-sidecar.yaml >
+
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: istio-sidecar-reg
+spec:
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      spiffe.io/spire-managed-identity: "true"
+  workloadSelectorTemplates:
+    - "k8s:ns:default"
+
+
+  # kubectl apply -f $LOC_SPIRE/test3/clusterspiffeid-sidecar.yaml
+
 
 < gateways-clusterspiffeid.yaml >
 
@@ -127,16 +155,179 @@ Using install-istio.sh script, execute until 'Set the default network for cluste
 	  - "k8s:sa:{{ .PodSpec.ServiceAccountName }}"
 
 
-  clu1 [50]{~}# k apply -f $LOC_SPIRE/test3/gateways-clusterspiffeid.yaml
+  # kubectl apply -f $LOC_SPIRE/test3/gateways-clusterspiffeid.yaml
   clusterspiffeid.spire.spiffe.io/istio-gateways created
 
 
 
 
-5. Istio Operator (IOP) for ingressgateway 
+5. Istio Operator (IOP) with merging
 -------------------------------------------
-(from Official website)
+!!! <IMPORTANT> !!!!
 
+- Need to merge IOP-ingress-fromOfficial.yaml, iop-ew-cluster1.yaml
+- Otherwise, some components will be deleted 
+
+istioctl install -f iop-ingress-ew-merge.yaml --skip-confirmation
+
+<iop-ingress-ew-merge.yaml>{{{
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: ingress-and-eastwest
+  namespace: istio-system
+spec:
+  profile: default
+
+  meshConfig:
+    trustDomain: example.org
+    trustDomainAliases:
+      - cluster.local
+    defaultConfig:
+      proxyMetadata:
+        DNS_CAPTURE: "true"
+        DNS_AUTO_ALLOCATE: "true"
+
+  values:
+    global:
+      network: network2
+    # 공통: 사이드카 주입 템플릿(SPIRE CSI 마운트)
+    sidecarInjectorWebhook:
+      templates:
+        spire: |
+          labels:
+            spiffe.io/spire-managed-identity: "true"
+          spec:
+            containers:
+            - name: istio-proxy
+              volumeMounts:
+              - name: workload-socket
+                mountPath: /run/secrets/workload-spiffe-uds
+                readOnly: true
+            volumes:
+              - name: workload-socket
+                csi:
+                  driver: "csi.spiffe.io"
+                  readOnly: true
+
+  components:
+    ingressGateways:
+      # 1) North-South Ingress Gateway
+      - name: istio-ingressgateway
+        enabled: true
+        label:
+          istio: ingressgateway
+        k8s:
+          overlays:
+            - apiVersion: apps/v1
+              kind: Deployment
+              name: istio-ingressgateway
+              patches:
+                - path: spec.template.spec.volumes.[name:workload-socket]
+                  value:
+                    name: workload-socket
+                    csi:
+                      driver: "csi.spiffe.io"
+                      readOnly: true
+                - path: spec.template.spec.containers.[name:istio-proxy].volumeMounts.[name:workload-socket]
+                  value:
+                    name: workload-socket
+                    mountPath: "/run/secrets/workload-spiffe-uds"
+                    readOnly: true
+                - path: spec.template.spec.initContainers
+                  value:
+                    - name: wait-for-spire-socket
+                      image: busybox:1.36
+                      volumeMounts:
+                        - name: workload-socket
+                          mountPath: /run/secrets/workload-spiffe-uds
+                          readOnly: true
+                      env:
+                        - name: CHECK_FILE
+                          value: /run/secrets/workload-spiffe-uds/socket
+                      command:
+                        - sh
+                        - "-c"
+                        - |
+                          echo "$(date -Iseconds)" Waiting for: ${CHECK_FILE}
+                          while [[ ! -e ${CHECK_FILE} ]] ; do
+                            echo "$(date -Iseconds)" File does not exist: ${CHECK_FILE}
+                            sleep 15
+                          done
+                          ls -l ${CHECK_FILE}
+
+      # 2) East-West Gateway (multi-cluster)
+      - name: istio-eastwestgateway
+        enabled: true
+        label:
+          istio: eastwestgateway
+          app: istio-eastwestgateway
+          topology.istio.io/network: network2
+        k8s:
+          env:
+            - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+              value: network2
+          service:
+            type: LoadBalancer
+            ports:
+              - name: status-port
+                port: 15021
+                targetPort: 15021
+              - name: tls
+                port: 15443
+                targetPort: 15443
+              - name: tls-istiod
+                port: 15012
+                targetPort: 15012
+              - name: tls-webhook
+                port: 15017
+                targetPort: 15017
+          overlays:
+            - apiVersion: apps/v1
+              kind: Deployment
+              name: istio-eastwestgateway
+              patches:
+                - path: spec.template.spec.volumes.[name:workload-socket]
+                  value:
+                    name: workload-socket
+                    csi:
+                      driver: "csi.spiffe.io"
+                      readOnly: true
+                - path: spec.template.spec.containers.[name:istio-proxy].volumeMounts.[name:workload-socket]
+                  value:
+                    name: workload-socket
+                    mountPath: "/run/secrets/workload-spiffe-uds"
+                    readOnly: true
+                - path: spec.template.spec.initContainers
+                  value:
+                    - name: wait-for-spire-socket
+                      image: busybox:1.36
+                      volumeMounts:
+                        - name: workload-socket
+                          mountPath: /run/secrets/workload-spiffe-uds
+                          readOnly: true
+                      env:
+                        - name: CHECK_FILE
+                          value: /run/secrets/workload-spiffe-uds/socket
+                      command:
+                        - sh
+                        - "-c"
+                        - |
+                          echo "$(date -Iseconds)" Waiting for: ${CHECK_FILE}
+                          while [[ ! -S ${CHECK_FILE} ]]; do
+                            echo "$(date -Iseconds)" File does not exist: ${CHECK_FILE}
+                            sleep 15
+                          done
+                          ls -l ${CHECK_FILE}/*}}}*/
+
+
+
+
+
+
+
+-------- deprecated --------------------------
+(from Official website)
 istioctl install -f $LOC_SPIRE/test3/IOP-ingress-fromOfficial.yaml --skip-confirmation
 
 
@@ -239,7 +430,8 @@ spec:
   ✔ Istio core installed ⛵️
   ✔ Istiod installed 🧠
   ✔ Ingress gateways installed 🛬
-  - Pruning removed resources                                                                                                            Removed apps/v1, Kind=Deployment/istio-egressgateway.istio-system.
+  - Pruning removed resources  
+    Removed apps/v1, Kind=Deployment/istio-egressgateway.istio-system.
 	Removed /v1, Kind=Service/istio-egressgateway.istio-system.
 	Removed /v1, Kind=ServiceAccount/istio-egressgateway-service-account.istio-system.
 	Removed rbac.authorization.k8s.io/v1, Kind=RoleBinding/istio-egressgateway-sds.istio-system.
@@ -252,8 +444,9 @@ spec:
 
 
 
-6. Istio Operator (IOP) for EastWestGateway
+* Istio Operator (IOP) for EastWestGateway
 -------------------------------------------
+-------- deprecated --------------------------
 < iop-ew-cluster1.yaml >
   clu1 [58]{~}# istioctl install -f $LOC_SPIRE/test3/iop-ew-cluster1-3.yaml
 
@@ -371,7 +564,7 @@ spec:
 
 
 
-7. istio-install.sh again for the rest 
+6. istio-install.sh again for the rest 
 ---------------------------------------
 
 1) # Expose services in cluster1
@@ -433,7 +626,7 @@ istioctl create-remote-secret \
 
 
 
-8. httpbin, curl deploy and check SPIRE SVID
+7. httpbin, curl deploy and check SPIRE SVID
 ---------------------------------------------
 0) testfiles, 
 	- curl-spire.yaml
@@ -668,7 +861,7 @@ Envoy가 인증서를 어디서 가져오는지(=SPIRE Agent UDS인지, istiod g
 
 
 
- 체크리스트 after ew-gateway
+8. 체크리스트 after ew-gateway
 -----------------------------
 
 1) csi.spiffe.io 드라이버가 Ready인지 확인:

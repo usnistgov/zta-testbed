@@ -41,13 +41,14 @@ kubectl --context="${CTX_CLUSTER2}" label namespace istio-system topology.istio.
 
 # Configure cluster1 as a primary
 echo "Installing istio in $CLUSTER1_NAME..."
-istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}/cluster1.yaml --skip-confirmation
+istioctl --context="${CLUSTER1_CTX}" install -f ${LOC}/cluster1-SPIRE-trustDomain.yaml --skip-confirmation
 
 # Configure cluster2 as a primary
 echo "Installing istio in $CLUSTER2_NAME..."
-istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2.yaml --skip-confirmation
+istioctl --context="${CLUSTER2_CTX}" install -f ${LOC}/cluster2-SPIRE-trustDomain.yaml --skip-confirmation
 
 
+exit 1
 
 # Install the east-west gateway in cluster1
 #  (cf.)  samples/multicluster/gen-eastwest-gateway.sh --network network1 
