@@ -1,0 +1,76 @@
+# 1) ServiceAccount (namespace: sample)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flask-hello-sa
+  namespace: sample
+---
+# 2) (옵션) RBAC: Reading  services/endpoints/pods in the same namespace
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: Role
+#metadata:
+#  name: flask-hello-read-namespace
+#  namespace: sample
+#rules:
+#- apiGroups: [""]
+#  resources: ["services","endpoints","pods"]
+#  verbs: ["get","list","watch"]
+#---
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: RoleBinding
+#metadata:
+#  name: flask-hello-read-namespace-binding
+#  namespace: sample
+#subjects:
+#- kind: ServiceAccount
+#  name: flask-hello-sa
+#  namespace: sample
+#roleRef:
+#  kind: Role
+#  name: flask-hello-read-namespace
+#  apiGroup: rbac.authorization.k8s.io
+#---
+# 3) Service 
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-hello
+  namespace: sample
+spec:
+  selector:
+    app: flask-hello
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+---
+# 4) Deployment (+ SA, proxy.istio.io/config added, imagePullSecrets: pwct2' private registry)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-hello
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flask-hello
+  template:
+    metadata:
+      labels:
+        app: flask-hello
+      annotations:
+        proxy.istio.io/config: |
+          proxyMetadata:
+            ISTIO_META_DNS_CAPTURE: "true"
+            ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+    spec:
+      serviceAccountName: flask-hello-sa
+      containers:
+      - name: flask-hello
+        image: 129.6.142.13:8443/flask-hello:latest
+        ports:
+        - containerPort: 80
+      imagePullSecrets:
+      - name: registry-ca
+
