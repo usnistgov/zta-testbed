@@ -1,0 +1,9 @@
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: keycloak-ra
+  namespace: sample
+spec:
+  jwtRules:
+  - issuer: "http://keycloak.192.168.10.151.nip.io/realms/myrealm"
+    jwksUri: "http://keycloak.192.168.10.151.nip.io/realms/myrealm/protocol/openid-connect/certs"
