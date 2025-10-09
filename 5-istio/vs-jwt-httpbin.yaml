@@ -1,3 +1,21 @@
+# 아래의 virtualservice를 하기위해선 Gateway가 있어야 될거 같은데...
+# Istio-1.24.3/samples/...의 내용을 참조했는거 같다 
+
+#apiVersion: networking.istio.io/v1
+#kind: Gateway
+#metadata:
+#  name: httpbin-gateway
+#spec:
+#  selector:
+#    istio: ingressgateway
+#  servers:
+#  - port:
+#      number: 80
+#      name: http
+#      protocol: HTTP
+#    hosts:
+#    - "*"
+#---
 apiVersion: networking.istio.io/v1    
 kind: VirtualService                  
 metadata:                             
