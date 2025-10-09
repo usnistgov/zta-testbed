@@ -30,7 +30,7 @@ metadata:
 #  name: flask-hello-read-namespace
 #  apiGroup: rbac.authorization.k8s.io
 #---
-# 3) Service 
+# 3) Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -40,7 +40,8 @@ spec:
   selector:
     app: flask-hello
   ports:
-  - protocol: TCP
+  - name: http  	# ★ Istio port naming convention  (for HTTP 인식)
+    protocol: TCP
     port: 80
     targetPort: 80
 ---

@@ -7,7 +7,8 @@ spec:
   selector:
     app: flask-hello
   ports:
-  - protocol: TCP
+  - name: http      # ★ Istio port naming convention  (for HTTP 인식) 
+    protocol: TCP
     port: 80
     targetPort: 80
 
