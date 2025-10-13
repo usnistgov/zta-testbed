@@ -1,0 +1,82 @@
+# 0) Namespace (if needed ) — sidecar injection 
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sample
+  labels:
+    istio-injection: enabled
+---
+# 1) ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: curl-sa
+  namespace: sample
+---
+# 2) Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl
+  template:
+    metadata:
+      labels:
+        app: curl
+      annotations:
+        proxy.istio.io/config: |
+          proxyMetadata:
+            ISTIO_META_DNS_CAPTURE: "true"
+            ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+    spec:
+      serviceAccountName: curl-sa
+      containers:
+      - name: curl
+        image: curlimages/curl:8.10.1
+        imagePullPolicy: IfNotPresent
+        command: ["sh","-c","sleep 3650d"]
+---
+# 3) Service (for internal use; optional)
+apiVersion: v1
+kind: Service
+metadata:
+  name: curl
+  namespace: sample
+spec:
+  selector:
+    app: curl
+  ports:
+  - name: tcp
+    port: 80
+    targetPort: 80
+---
+# 4) (optional) RBAC: to read services/endpoints/pods in thesame namespace
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: Role
+#metadata:
+#  name: curl-read-namespace
+#  namespace: sample
+#rules:
+#- apiGroups: [""]
+#  resources: ["services","endpoints","pods"]
+#  verbs: ["get","list","watch"]
+#---
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: RoleBinding
+#metadata:
+#  name: curl-read-namespace-binding
+#  namespace: sample
+#subjects:
+#- kind: ServiceAccount
+#  name: curl-sa
+#  namespace: sample
+#roleRef:
+#  kind: Role
+#  name: curl-read-namespace
+#  apiGroup: rbac.authorization.k8s.io
+

@@ -5,32 +5,7 @@ metadata:
   name: flask-hello-sa
   namespace: sample
 ---
-# 2) (옵션) RBAC: Reading  services/endpoints/pods in the same namespace
-#apiVersion: rbac.authorization.k8s.io/v1
-#kind: Role
-#metadata:
-#  name: flask-hello-read-namespace
-#  namespace: sample
-#rules:
-#- apiGroups: [""]
-#  resources: ["services","endpoints","pods"]
-#  verbs: ["get","list","watch"]
-#---
-#apiVersion: rbac.authorization.k8s.io/v1
-#kind: RoleBinding
-#metadata:
-#  name: flask-hello-read-namespace-binding
-#  namespace: sample
-#subjects:
-#- kind: ServiceAccount
-#  name: flask-hello-sa
-#  namespace: sample
-#roleRef:
-#  kind: Role
-#  name: flask-hello-read-namespace
-#  apiGroup: rbac.authorization.k8s.io
-#---
-# 3) Service
+# 2) Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -45,7 +20,8 @@ spec:
     port: 80
     targetPort: 80
 ---
-# 4) Deployment (+ SA, proxy.istio.io/config added, imagePullSecrets: pwct2' private registry)
+# 3) Deployment (+ SA, proxy.istio.io/config added, imagePullSecrets: from the private registry)
+#	 move cert to /usr/local/share/ca-certificates/, then sudo update-ca-certificates && sudo systemctl restart containerd
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -75,3 +51,28 @@ spec:
       imagePullSecrets:
       - name: registry-ca
 
+# 4) (optional) RBAC: Reading  services/endpoints/pods in the same namespace
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: Role
+#metadata:
+#  name: flask-hello-read-namespace
+#  namespace: sample
+#rules:
+#- apiGroups: [""]
+#  resources: ["services","endpoints","pods"]
+#  verbs: ["get","list","watch"]
+#---
+#apiVersion: rbac.authorization.k8s.io/v1
+#kind: RoleBinding
+#metadata:
+#  name: flask-hello-read-namespace-binding
+#  namespace: sample
+#subjects:
+#- kind: ServiceAccount
+#  name: flask-hello-sa
+#  namespace: sample
+#roleRef:
+#  kind: Role
+#  name: flask-hello-read-namespace
+#  apiGroup: rbac.authorization.k8s.io
+#---
