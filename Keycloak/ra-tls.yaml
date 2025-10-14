@@ -1,0 +1,12 @@
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: httpbin-authn
+  namespace: sample
+spec:
+  selector:
+    matchLabels:
+      app: httpbin
+  jwtRules:
+  - issuer: "https://keycloak.192.168.56.102.nip.io/realms/demo"
+    jwksUri: "https://keycloak.192.168.56.102.nip.io/realms/demo/protocol/openid-connect/certs"

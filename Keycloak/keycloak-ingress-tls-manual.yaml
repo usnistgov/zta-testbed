@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    # 80으로 오면 443으로 강제
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # 백엔드는 8080(HTTP)로 통신
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    # (선택) HSTS - 프로덕션만 권장
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+spec:
+  tls:
+  - hosts:
+    - keycloak.192.168.56.102.nip.io
+    secretName: keycloak-tls
+  rules:
+  - host: keycloak.192.168.56.102.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: keycloak
+            port:
+              number: 8080
+

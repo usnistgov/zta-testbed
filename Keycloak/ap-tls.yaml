@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: httpbin-require-jwt
+  namespace: sample
+spec:
+  selector:
+    matchLabels:
+      app: httpbin
+  rules:
+  - from:
+    - source:
+        # RequestAuthentication 에 의해 유효성 검증된 JWT가 있을 때만 값이 셋팅됨
+        requestPrincipals: ["*"]
+
