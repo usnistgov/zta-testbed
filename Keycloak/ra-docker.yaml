@@ -1,0 +1,14 @@
+# httpbin-requestauth.yaml
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: httpbin-jwt
+  namespace: sample
+spec:
+  selector:
+    matchLabels:
+      app: httpbin
+  jwtRules:
+  - issuer: "http://10.5.0.2:8080/realms/myrealm"
+    jwksUri: "http://10.5.0.2:8080/realms/myrealm/protocol/openid-connect/certs"
+
