@@ -2,7 +2,7 @@
 ### ====== [CONFIG] Keycloak & Targets ======
 # Keycloak token endpoint (예: https://<host>/realms/<realm>/protocol/openid-connect/token)
 #KC_TOKEN_URL="http://keycloak.192.168.10.151.nip.io/realms/myrealm/protocol/openid-connect/token"
-KC_TOKEN_URL="http://10.5.0.2/realms/myrealm/protocol/openid-connect/token"
+KC_TOKEN_URL="http://10.5.0.2:8080/realms/myrealm/protocol/openid-connect/token"
 CLIENT_ID="myclient"
 USERNAME=myuser
 PASSWORD=myuser

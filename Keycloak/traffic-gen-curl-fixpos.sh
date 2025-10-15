@@ -3,27 +3,27 @@ URL1="http://flask-hello.sample.svc.cluster.local:80/hello"
 URL2="http://httpbin.sample.svc.cluster.local:80/get"
 
 count=0
-# Ctrl+C 처리
+# Ctrl+C process
 trap 'printf "\033[?25h\nStopped\n"; exit 0' INT TERM
-# 커서 숨김
+# hide cursor
 printf "\033[?25l"
 
 while true; do
   count=$((count+1))
 
-  # flask-hello 요청 (응답코드/시간 + 바디)
+  # flask-hello request (http response code/ total time  + body)
   res1=$(curl -s -w " %{http_code} %{time_total}" "$URL1" 2>/dev/null)
-  body1=$(echo "$res1" | awk '{print $1}')   # body만 따로 뽑기 힘들어서 전체를 두 단계로 분리할 수도 있음
+  body1=$(echo "$res1" | awk '{print $1}')   
 
-  # httpbin 요청 (응답코드/시간 + 바디)
+  # httpbin request (http response code/ total time  + body)
   res2=$(curl -s -w " %{http_code} %{time_total}" "$URL2" 2>/dev/null)
 
-  # 화면 지우고 커서를 위로 올림 (2줄 고정 영역)
-  printf "\033[2J\033[H"  # 화면 clear 후 커서를 홈(0,0)으로 이동
+  # clear the screen and move cursor up (2 lines fixed)
+  printf "\033[2J\033[H"  # after screen clear, cursor move to home (0,0)
   printf "#%05d | flask-hello: %s\n" "$count" "$res1"
   printf "       | httpbin:     %s\n" "$res2"
 
-  # 응답 내용(hello world / RBAC: access denied) 2줄 아래 고정 출력
+  # response (hello world / RBAC: access denied) fixed print out 2 lines below
   echo
   printf "flask-hello body: "
   curl -s "$URL1"
