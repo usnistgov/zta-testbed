@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl-bash
+  namespace: sample
+  annotations:                              
+    proxy.istio.io/config: |                
+      proxyMetadata:                        
+        ISTIO_META_DNS_CAPTURE: "true"      
+        ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+spec:
+  containers:
+  - name: curl-bash
+    image: ubuntu:22.04
+    command: ["/bin/bash"]
+    args: ["-c", "sleep infinity"]
+    stdin: true
+    tty: true
+    volumeMounts:
+    - name: host-dir
+      mountPath: /mnt/hostdir
+  volumes:
+  - name: host-dir
+    hostPath:
+      path: /home/onfadmin 
+      type: Directory
+

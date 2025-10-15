@@ -1,5 +1,6 @@
 #!/bin/sh
-KC=http://keycloak.192.168.10.151.nip.io
+#KC=http://keycloak.192.168.10.151.nip.io
+KC=http://10.5.0.2:8080
 REALM=myrealm
 CLIENT_ID=myclient
 USERNAME=myuser
@@ -11,4 +12,6 @@ ACCESS_TOKEN=$(curl -s \
   -d "username=$USERNAME" \
   -d "password=$PASSWORD" \
   "$KC/realms/$REALM/protocol/openid-connect/token" \
-  | jq -r .access_token)
+  | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+#  | jq -r .access_token)
+
