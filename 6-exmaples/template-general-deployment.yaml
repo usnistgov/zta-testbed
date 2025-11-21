@@ -1,0 +1,193 @@
+# ==========================================================
+# 0) Namespace (enables Istio sidecar injection for this NS)
+# ==========================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nist-oran                  # << EDIT >> namespace name
+  labels:
+    istio-injection: enabled       # Istio sidecar auto-injection
+---
+# ==========================================================
+# 1) ServiceAccount
+#    - Pod will run as this ServiceAccount
+#    - Used for RBAC, and sometimes for identity in Istio
+# ==========================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sme-sa                     # << EDIT >> service account name
+  namespace: nist-oran
+---
+# ==========================================================
+# 2) OPTIONAL: ConfigMap
+#    - Use when your app needs configuration files
+#    - Keys become filenames when mounted as a volume
+# ==========================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sme-config                 # << EDIT >> configmap name
+  namespace: nist-oran
+data:
+  # This key will become /config/app.conf inside the container
+  app.conf: |
+    # Example configuration file
+    key=value
+    timeout=5
+---
+# ==========================================================
+# 3) Deployment
+#    - Controls how many replicas, Pod template, labels, etc.
+#    - Istio sidecar will be injected based on namespace label
+# ==========================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sme                        # << EDIT >> deployment name
+  namespace: nist-oran
+spec:
+  replicas: 1                      # number of Pods
+  selector:
+    matchLabels:
+      app: sme                     # must match template.metadata.labels
+  template:
+    metadata:
+      labels:
+        app: sme                   # label used by Service selector
+      annotations:
+        # Istio proxy configuration useful for DNS-based service access
+        proxy.istio.io/config: |
+          proxyMetadata:
+            ISTIO_META_DNS_CAPTURE: "true"
+            ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+    spec:
+      # Pod will use this ServiceAccount (for RBAC, etc.)
+      serviceAccountName: sme-sa
+
+      # Image pull secret for private registry (10.5.0.2:8443)
+      # This Secret must exist in the same namespace (nist-oran)
+      # This is derived from registry-secret.yaml in gitlab repo 
+      # The same as tls.cert for the private docker registry
+      imagePullSecrets:
+      - name: registry-ca          # << EDIT >> docker-registry secret name
+
+      # ------------------------------------------------------
+      # containers:
+      #   - list of containers that will run in this Pod
+      #   - each container has its own image, command, ports, etc.
+      # ------------------------------------------------------
+      containers:
+      - name: sme                  # container name
+        # Private registry image URL (replace with your own)
+        image: 10.5.0.2:8443/flask-hello:latest
+        # IfNotPresent = pull only if image is not cached on the node
+        # Use Always if you frequently update the same tag
+        imagePullPolicy: IfNotPresent
+
+        # Placeholder command: keep the container running for debugging
+        # Replace this with your actual app command if needed
+        command: ["sh", "-c", "sleep 3650d"]
+
+        # ----------------------------------------------------
+        # containerPort:
+        #   - purely metadata for documentation / tools
+        #   - does NOT affect Service routing directly
+        #   - should match the port your container actually listens on
+        # ----------------------------------------------------
+        ports:
+        - name: tcp-port
+          containerPort: 323       # container listens on 323 (if your app uses it)
+
+        # ----------------------------------------------------
+        # volumeMounts:
+        #   - attaches a named volume into the container's filesystem
+        #   - here we mount the ConfigMap as files under /config
+        # ----------------------------------------------------
+        volumeMounts:
+        - name: app-config
+          mountPath: /config       # files from ConfigMap will appear here
+          readOnly: true
+
+        # ----------------------------------------------------
+        # OPTIONAL: load ConfigMap as environment variables
+        #   - each key in the ConfigMap becomes an env var
+        #   - example: app.conf is for files, but you could also
+        #     store simple key=value pairs and load as env
+        # ----------------------------------------------------
+        # envFrom:
+        # - configMapRef:
+        #     name: sme-config
+
+      # ------------------------------------------------------
+      # volumes:
+      #   - define named volumes for the Pod
+      #   - can be ConfigMap, Secret, PVC, emptyDir, etc.
+      #   - volumeMounts in the container refer to these names
+      # ------------------------------------------------------
+      volumes:
+      - name: app-config
+        configMap:
+          name: sme-config         # must match metadata.name of ConfigMap above
+---
+# ==========================================================
+# 4) Service
+#    - Stable virtual IP + DNS name for this app (ClusterIP)
+#    - Maps service ports (port) to Pod ports (targetPort)
+#    - Here we define two ports:
+#        * http: service port 80  -> targetPort 80
+#        * tcp:  service port 8323 -> targetPort 323
+#    - NOTE: your container must actually listen on those ports
+#      for traffic to succeed (323 is reflected in containerPort above;
+#      80 is only a logical mapping unless your app listens on 80)
+# ==========================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: sme
+  namespace: nist-oran
+spec:
+  selector:
+    app: sme                      # select Pods with label app=sme
+  ports:
+  # HTTP-style traffic: other Pods can call sme:80
+  - name: http
+    protocol: TCP
+    port: 80                      # Service port (what clients use)
+    targetPort: 80                # Pod port (container must listen on 80)
+
+  # Raw TCP or custom protocol on port 8323
+  - name: tcp
+    protocol: TCP
+    port: 8323                    # Service port (what clients use)
+    targetPort: 323               # Pod port (matches containerPort 323)
+---
+# ==========================================================
+# 5) OPTIONAL RBAC
+#    - Allow this ServiceAccount to read services/endpoints/pods
+#      in the same namespace (useful for service discovery, etc.)
+# ==========================================================
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: Role
+# metadata:
+#   name: sme-read-namespace
+#   namespace: nist-oran
+# rules:
+# - apiGroups: [""]
+#   resources: ["services","endpoints","pods"]
+#   verbs: ["get","list","watch"]
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: sme-read-namespace-binding
+#   namespace: nist-oran
+# subjects:
+# - kind: ServiceAccount
+#   name: sme-sa
+#   namespace: nist-oran
+# roleRef:
+#   kind: Role
+#   name: sme-read-namespace
+#   apiGroup: rbac.authorization.k8s.io
+

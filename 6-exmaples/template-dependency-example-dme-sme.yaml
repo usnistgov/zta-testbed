@@ -1,0 +1,218 @@
+# ==========================================================
+# 0) Namespace (Istio sidecar auto-injection enabled)
+# ==========================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nist-oran
+  labels:
+    istio-injection: enabled
+---
+# ==========================================================
+# 1) ServiceAccounts for dme and sme
+# ==========================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dme-sa
+  namespace: nist-oran
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sme-sa
+  namespace: nist-oran
+---
+# ==========================================================
+# 2) dme Deployment
+#    - Simple HTTP service listening on port 8080
+#    - Exposes /health endpoint for dependency checks
+# ==========================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dme
+  namespace: nist-oran
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dme
+  template:
+    metadata:
+      labels:
+        app: dme
+      annotations:
+        proxy.istio.io/config: |
+          proxyMetadata:
+            ISTIO_META_DNS_CAPTURE: "true"
+            ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+    spec:
+      serviceAccountName: dme-sa
+      containers:
+      - name: dme
+        image: hashicorp/http-echo:0.2.3   # public tiny HTTP server image
+        args:
+        - "-listen=:8080"
+        - "-text=dme-ok"
+        ports:
+        - name: http
+          containerPort: 8080
+        # (Optional) very simple /health endpoint via same text response
+        # If you prefer a dedicated /health path, replace the image/command
+---
+# ==========================================================
+# 3) dme Service
+#    - ClusterIP service at dme.nist-oran.svc.cluster.local:8080
+#    - This is what sme will call
+# ==========================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: dme
+  namespace: nist-oran
+spec:
+  selector:
+    app: dme
+  ports:
+  - name: http
+    port: 8080          # Service port
+    targetPort: 8080    # Pod/container port
+---
+# ==========================================================
+# 4) sme Deployment
+#    - Depends on dme:
+#      * initContainer "wait-for-dme" checks dme's endpoint with retry/backoff
+#      * main container (sme) only starts after initContainer succeeds
+# ==========================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sme
+  namespace: nist-oran
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sme
+  template:
+    metadata:
+      labels:
+        app: sme
+      annotations:
+        # Istio proxy configuration (DNS capture)
+        proxy.istio.io/config: |
+          proxyMetadata:
+            ISTIO_META_DNS_CAPTURE: "true"
+            ISTIO_META_DNS_AUTO_ALLOCATE: "true"
+    spec:
+      serviceAccountName: sme-sa
+
+      # If sme image is in a private registry, uncomment and set your secret
+      imagePullSecrets:
+      - name: registry-ca            # << EDIT or remove if not needed >>
+
+      # ------------------------------------------------------
+      # initContainers:
+      #   - Run BEFORE the main containers start
+      #   - Used here to implement "depends_on" style behavior:
+      #     wait until dme is reachable at dme.nist-oran.svc.cluster.local:8080
+      # ------------------------------------------------------
+      initContainers:
+      - name: wait-for-dme
+        image: curlimages/curl:8.10.1
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          DME_URL="http://dme.nist-oran.svc.cluster.local:8080"
+          MAX_RETRIES=30
+          SLEEP=2
+
+          echo "Waiting for dme at ${DME_URL} ..."
+          i=1
+          while [ $i -le $MAX_RETRIES ]; do
+            if curl -sf "${DME_URL}" >/dev/null 2>&1; then
+              echo "dme is reachable. Proceeding."
+              exit 0
+            fi
+
+            echo "Attempt ${i}/${MAX_RETRIES} failed. Retrying in ${SLEEP}s..."
+            sleep $SLEEP
+
+            # simple backoff (cap at 30s)
+            if [ $SLEEP -lt 30 ]; then
+              SLEEP=$((SLEEP * 2))
+            fi
+
+            i=$((i + 1))
+          done
+
+          echo "dme is still not reachable after ${MAX_RETRIES} attempts. Failing initContainer."
+          exit 1
+
+      # ------------------------------------------------------
+      # Main containers for sme
+      #   - Only start if the initContainer above exits with code 0
+      # ------------------------------------------------------
+      containers:
+      - name: sme
+        #image: 129.6.142.13:8443/flask-hello:latest   # << EDIT >>
+        image: 10.5.0.2:8443/flask-hello:latest   # << EDIT >>
+        imagePullPolicy: IfNotPresent
+        # Example placeholder: replace with your actual app command
+        command: ["sh", "-c", "sleep 3650d"]
+
+        # Expose a TCP port (for SME's own service)
+        ports:
+        - name: tcp-port
+          containerPort: 323
+
+        # OPTIONAL: mount a ConfigMap with configuration (if needed)
+        # volumeMounts:
+        # - name: sme-config-vol
+        #   mountPath: /config
+        #   readOnly: true
+
+        # OPTIONAL: readinessProbe for sme itself 
+        #   - This controls when sme is added to its own Service
+        #   - Example assuming your app exposes HTTP on port 80:
+        # readinessProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 80
+        #   initialDelaySeconds: 5
+        #   periodSeconds: 5
+
+      # OPTIONAL volumes for sme config (if you use ConfigMap)
+      # volumes:
+      # - name: sme-config-vol
+      #   configMap:
+      #     name: sme-config
+---
+# ==========================================================
+# 5) sme Service
+#    - Internal access to sme Pods
+#    - Two ports:
+#       * http: 80 -> 80    (if you later expose HTTP)
+#       * tcp:  8323 -> 323 (for TCP/custom protocol)
+# ==========================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: sme
+  namespace: nist-oran
+spec:
+  selector:
+    app: sme
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 80        # << EDIT if your container listens on 80 or other port >>
+  - name: tcp
+    protocol: TCP
+    port: 8323
+    targetPort: 323       # matches containerPort: 323 above
+
