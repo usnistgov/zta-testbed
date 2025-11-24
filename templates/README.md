@@ -17,20 +17,20 @@ This template is designed for multi-service microservice environments and works 
 
 - Istio-compatible
   Namespace is labeled:
-```bash
+```yaml
 istio-injection: enabled
 ```
 - Optional ConfigMap support
-  Mount or consume configuration as needed.
+  - Mount or consume configuration as needed.
 
 - Supports private registries
-  imagePullSecrets included in the template.
+  - imagePullSecrets included in the template.
 
 
 
 # Fill-In Checklist (What You MUST Edit)
 
-Before applying the template, update the following values.
+Before applying the template, update the following values marked "# << EDIT >>" in template files.
 
 ## 1. Namespace
 
