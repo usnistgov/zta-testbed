@@ -7,33 +7,24 @@ This template is designed for multi-service microservice environments and works 
 
 #  Features
 - Two microservices: dme and sme
-
-dme runs a simple HTTP service on port 8080
-
-sme depends on dme and should not start until dme is reachable
+  - dme runs a simple HTTP service on port 8080
+  - sme depends on dme and should not start until dme is reachable
 
 - Kubernetes-native dependency handling (no depends_on)
-
-Implemented using:
-
-initContainer for startup blocking until dme is available
-
-retry + backoff logic using curl inside the initContainer
+  Implemented using:
+  - initContainer for startup blocking until dme is available
+  - retry + backoff logic using curl inside the initContainer
 
 - Istio-compatible
-
-Namespace is labeled:
-
+  Namespace is labeled:
 ```bash
 istio-injection: enabled
 ```
 - Optional ConfigMap support
-
-Mount or consume configuration as needed.
+  Mount or consume configuration as needed.
 
 - Supports private registries
-
-imagePullSecrets included in the template.
+  imagePullSecrets included in the template.
 
 
 
@@ -44,14 +35,14 @@ Before applying the template, update the following values.
 ## 1. Namespace
 
 Must be lowercase (RFC 1123):
-```bash
+```yaml
 metadata.name: nist-oran
 ```
 
 ## 2. ServiceAccount Names
 
 Update as needed:
-```bash
+```yaml
 dme-sa
 sme-sa
 ```
@@ -61,19 +52,19 @@ sme-sa
 Replace with your actual images:
 
 ### dme:
-```bash
+```yaml
 image: <your-dme-image>
 ```
 
 ### sme:
-```bash
+```yaml
 image: 10.5.0.2:8443/flask-hello:latest
 ```
 
 ## 4. Private Registry Secret (optional)
 
 If you use a private registry, ensure the secret exists:
-```bash
+```yaml
 imagePullSecrets:
   - name: registry-ca
 ```
@@ -83,13 +74,13 @@ imagePullSecrets:
 Adjust container ports & service ports as required.
 
 ### dme:
-```bash
+```yaml
 containerPort: 8080
 service port: 8080
 ```
 
 ### sme:
-```bash
+```yaml
 containerPort: 323
 service port: 8323
 ```
@@ -98,7 +89,7 @@ service port: 8323
 
 If your application needs config files, edit:
 
-```bash
+```yaml
 data:
   app.conf: |
     key=value
@@ -111,21 +102,20 @@ Otherwise, remove the ConfigMap and related volume/volumeMount.
 ## 7. Application Start Commands
 
 Replace placeholder:
-```bash
+```yaml
 command: ["sh", "-c", "sleep 3650d"]
 ```
 
 
 
 
-# Service Dependency Logic (How sme waits for dme)
+# Service Dependency Logic (How SME waits for DME)
 
 Kubernetes does not support native depends_on like Docker Compose.
 
 To mimic dependency behavior:
 
-- We use an initContainer in sme:
-
+- can be used an initContainer in sme:
   - Blocks startup until dme is reachable
   - Performs repeated curl attempts
   - Uses exponential backoff
@@ -158,7 +148,6 @@ initContainers:
 ```
 
 - What this means:
-
   - If dme is down → sme stays in Init state
   - No CrashLoopBackOff
   - When dme comes up → sme starts automatically
@@ -168,7 +157,7 @@ This is the most reliable Kubernetes-native pattern for service dependencies.
 
 # How to Deploy
 
-Apply all manifests:
+Apply the modified manifests you want to deploy:
 
 ```bash
 kubectl apply -f template-dependency-example-dme-sme.yaml
