@@ -161,8 +161,14 @@ Apply the modified manifests you want to deploy:
 
 ```bash
 kubectl apply -f template-dependency-example-dme-sme.yaml
+and/or
 kubectl apply -f template-general-deployment.yaml 
 ```
 
-
+# How to uninstall
+```bash
+kubectl delete -f template-dependency-example-dme-sme.yaml
+and/or
+kubectl delete -f template-general-deployment.yaml 
+```
 
