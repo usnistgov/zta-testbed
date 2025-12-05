@@ -90,3 +90,7 @@ pkgsrc/
 redhat/
 solaris/
 tests/
+certs/**/*.key
+certs/**/*.pem
+certs/**/*.csr
+certs/**/*.srl
